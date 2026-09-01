@@ -65,11 +65,18 @@ Because the tunnel connection is outbound-initiated, your router is never involv
 
 Everything it writes lives in `/etc/selfmail`, `/opt/selfmail` and `/var/mail/vhosts`. Your existing `main.cf` is backed up to `main.cf.selfmail-backup`.
 
+## Day-to-day
+
+```bash
+sudo ./run.sh     # start everything, print the local and public URLs
+sudo ./kill.sh    # stop selfmail and the tunnel (add --all to stop postfix too)
+```
+
 ## DNS
 
 Open the web UI, go to the **DNS** tab. It lists every record with its exact name and value, generated from your live configuration rather than a template. Add them at your DNS host, then press **Check records** — it resolves each one against public DNS and shows what's missing, what's wrong, and what it actually found.
 
-You'll always need an `A` record, an `MX`, plus `TXT` records for SPF, DKIM and DMARC. Relay mode adds one more TXT telling the relay where to deliver.
+You'll always need an `A` record, an `MX`, plus `TXT` records for SPF, DKIM and DMARC. Relay mode adds one more TXT telling the relay where to deliver — if the installer built your tunnel, that record arrives **already filled in** with the real hostname and secret, ready to paste.
 
 > On Cloudflare, the `A` record for your mail host **must be grey-cloud / "DNS only"**. Proxying replaces your IP with Cloudflare's and SPF fails immediately.
 

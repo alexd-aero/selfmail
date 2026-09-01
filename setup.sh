@@ -198,8 +198,15 @@ if [ "$USE_CF" = 1 ]; then
     say "  A URL will appear below. Open it in any browser, sign in, and"
     say "  authorise the domain you entered. This installer waits for you."
     say ""
+    # `tunnel login` ignores TUNNEL_ORIGIN_CERT and always writes to the
+    # invoking user's home directory, so collect it from wherever it landed.
     cloudflared tunnel login || die "cloudflare login failed"
-    [ -f /etc/cloudflared/cert.pem ] || die "login did not produce a certificate"
+    CF_CERT=""
+    for c in "$HOME/.cloudflared/cert.pem" /root/.cloudflared/cert.pem              "${SUDO_USER:+/home/$SUDO_USER/.cloudflared/cert.pem}"; do
+      [ -n "$c" ] && [ -f "$c" ] && { CF_CERT="$c"; break; }
+    done
+    [ -n "$CF_CERT" ] || die "login did not produce a certificate"
+    install -m600 "$CF_CERT" /etc/cloudflared/cert.pem
   fi
   ok "authorised with Cloudflare"
 
@@ -209,6 +216,12 @@ if [ "$USE_CF" = 1 ]; then
   fi
   TUNNEL_ID="$(cloudflared tunnel list 2>/dev/null | awk -v n="$TUNNEL_NAME" '$2==n {print $1}' | head -1)"
   [ -n "$TUNNEL_ID" ] || die "could not determine tunnel id"
+  if [ ! -f "/etc/cloudflared/$TUNNEL_ID.json" ]; then
+    for d in "$HOME/.cloudflared" /root/.cloudflared "${SUDO_USER:+/home/$SUDO_USER/.cloudflared}"; do
+      [ -n "$d" ] && [ -f "$d/$TUNNEL_ID.json" ] && { install -m600 "$d/$TUNNEL_ID.json" "/etc/cloudflared/$TUNNEL_ID.json"; break; }
+    done
+  fi
+  [ -f "/etc/cloudflared/$TUNNEL_ID.json" ] || die "tunnel credentials file not found"
   ok "tunnel $TUNNEL_NAME ($TUNNEL_ID)"
 
   # creates the CNAME in Cloudflare DNS automatically
