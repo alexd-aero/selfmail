@@ -24,8 +24,8 @@ selfmail offers two ways to run:
 
 | Mode | How inbound works | Needs port 25 inbound? |
 |---|---|---|
+| **relay** (default) | A free relay accepts mail on *its* port 25 and POSTs each message to a public HTTPS URL for your server. | **No** |
 | **direct** | Your host owns port 25 and receives mail itself. | Yes |
-| **relay** | A free relay accepts mail on *its* port 25 and POSTs each message to a public HTTPS URL for your server. | **No** |
 
 Relay mode is the point of this project. Something must own port 25 — it just doesn't have to be you.
 
@@ -101,7 +101,7 @@ selfmail already pins outbound to IPv4, because sending over IPv6 without a PTR 
 
 ## Security notes
 
-- The web UI is behind HTTP basic auth. **Put it behind HTTPS** (a tunnel or reverse proxy) before exposing it — basic auth over plain HTTP sends credentials in cleartext.
+- **The web UI has no login.** Anyone who can reach the port can read your mail and send as you. Keep it on a trusted network, or put it behind a reverse proxy, tunnel or VPN that provides its own authentication. Do not expose it directly to the internet.
 - The inbound webhook is authenticated by a shared secret in the URL path. In relay mode that URL is published in a public DNS TXT record, so **anyone who reads your zone can POST messages into your inbox.** They cannot send, relay or read anything — the worst case is junk in your Maildir. Restrict the endpoint to your relay's published source IPs if that matters to you.
 - Postfix is configured to reject relaying for anyone outside `127.0.0.0/8`. Verify after install:
   ```bash
@@ -128,6 +128,7 @@ tail -f /var/log/mail.log          # /var/log/maillog on RHEL-family
 ```bash
 curl https://YOUR-URL/inbound/YOUR-SECRET/ping     # expects {"ok":true,"ready":true}
 ```
+The relay's MX and `forward-email=` TXT records must both be present on your mail domain; the **DNS** tab's Check button verifies them.
 If that works but mail still doesn't arrive, the TXT record pointing the relay at your URL is wrong.
 
 ---

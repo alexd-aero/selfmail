@@ -84,13 +84,13 @@ ask WEB_PORT "Port for the web interface" "$PORT_DEFAULT"
 
 say ""
 say "  ${B}How will inbound mail reach this machine?${Z}"
-say "    1) direct - this host owns port 25 and receives mail itself."
+say "    1) relay  - a free relay accepts mail on its port 25 and posts it"
+say "                to a public HTTPS URL for this app. Works behind NAT"
+say "                with no port forwarding. Recommended."
+say "    2) direct - this host owns port 25 and receives mail itself."
 say "                Requires inbound TCP 25 from the internet."
-say "    2) relay  - a free relay accepts mail and posts it to a public"
-say "                HTTPS URL for this app. Use this behind NAT when you"
-say "                cannot open port 25."
 ask MODE_CHOICE "Choose 1 or 2" "1"
-if [ "$MODE_CHOICE" = "2" ]; then MODE="relay"; else MODE="direct"; fi
+if [ "$MODE_CHOICE" = "2" ]; then MODE="direct"; else MODE="relay"; fi
 
 WEBHOOK_BASE=""
 if [ "$MODE" = "relay" ]; then
@@ -104,17 +104,6 @@ DETECTED_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || t
 ask PUBLIC_IP "Public IPv4 address of this server" "$DETECTED_IP"
 [ -n "$PUBLIC_IP" ] || die "a public IP is required for the SPF record"
 
-ADMIN_USER=""
-ask ADMIN_USER "Web interface username" "admin"
-ADMIN_PASS=""
-printf '  Web interface password [blank = generate one]: '
-if [ "$INTERACTIVE" = 1 ]; then read -r -s ADMIN_PASS </dev/tty || true; else read -r ADMIN_PASS || true; fi
-printf '\n'
-GENERATED_PASS=0
-if [ -z "$ADMIN_PASS" ]; then
-  ADMIN_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
-  GENERATED_PASS=1
-fi
 INBOUND_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | cut -c1-28)"
 
 say ""
@@ -124,7 +113,7 @@ say "    address     $MAILBOX@$MAIL_DOMAIN"
 say "    hostname    $MX_HOST"
 say "    public IP   $PUBLIC_IP"
 say "    mode        $MODE"
-say "    web UI      http://<this-host>:$WEB_PORT  (user $ADMIN_USER)"
+say "    web UI      http://<this-host>:$WEB_PORT"
 say ""
 ask CONFIRM "Proceed? (y/n)" "y"
 case "$CONFIRM" in y|Y|yes|YES) : ;; *) die "aborted" ;; esac
@@ -306,8 +295,6 @@ chmod 640 "$CFG_FILE"
 
 cat > "$ENV_FILE" <<ENV
 SELFMAIL_PORT=$WEB_PORT
-SELFMAIL_USER=$ADMIN_USER
-SELFMAIL_PASS=$ADMIN_PASS
 SELFMAIL_INBOUND_SECRET=$INBOUND_SECRET
 SELFMAIL_CONFIG=$CFG_FILE
 SELFMAIL_MAILROOT=$MAILROOT
@@ -364,12 +351,8 @@ IP_SHOW="$(hostname -I 2>/dev/null | awk '{print $1}')"
 step "Done"
 say ""
 say "  ${B}Web interface${Z}   http://${IP_SHOW:-localhost}:$WEB_PORT"
-say "  ${B}Username${Z}        $ADMIN_USER"
-if [ "$GENERATED_PASS" = 1 ]; then
-  say "  ${B}Password${Z}        $ADMIN_PASS   ${Y}(generated - save this now)${Z}"
-else
-  say "  ${B}Password${Z}        (the one you entered)"
-fi
+say "  ${Y}The interface has no login. Keep it on a trusted network,${Z}"
+say "  ${Y}or put it behind a reverse proxy or tunnel with its own auth.${Z}"
 say ""
 say "  Open the web interface and go to the ${B}DNS${Z} tab. It lists every record"
 say "  you need to add at your DNS host, and the ${B}Check records${Z} button verifies"

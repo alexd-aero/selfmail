@@ -28,7 +28,7 @@ const DEFAULTS = {
   defaultTo: '',
   dmarcRua: '',
   dmarcPolicy: 'none',
-  mode: 'direct',        // 'direct' = own MX on port 25 | 'relay' = webhook
+  mode: 'relay',         // 'relay' = webhook (default) | 'direct' = own MX on port 25
   relayProvider: 'forwardemail',
   webhookUrl: '',        // public https URL of this app, for relay mode
 };
@@ -125,15 +125,6 @@ app.get('/inbound/:secret/ping', (req, res) => {
 // Everything below requires auth.
 // ---------------------------------------------------------------------
 app.use(express.json({ limit: '25mb' }));
-app.use(function (req, res, next) {
-  if (!PASS) return next(); // unconfigured: setup.sh always sets one
-  const parts = (req.headers.authorization || '').split(' ');
-  if (parts[0] === 'Basic' && parts[1]) {
-    const dec = Buffer.from(parts[1], 'base64').toString().split(':');
-    if (dec[0] === USER && dec.slice(1).join(':') === PASS) return next();
-  }
-  res.set('WWW-Authenticate', 'Basic realm="selfmail"').status(401).send('auth required');
-});
 app.use(express.static(path.join(APP_DIR, 'public')));
 
 const transport = nodemailer.createTransport({
@@ -322,6 +313,7 @@ app.get('/api/sent', (req, res) => res.json(readSent()));
 
 // --- inbox ------------------------------------------------------------
 function parseHeaders(raw) {
+  raw = String(raw).split(String.fromCharCode(13,10)).join(String.fromCharCode(10));
   const split = raw.indexOf(NL + NL);
   const head = (split === -1 ? raw : raw.slice(0, split)).replace(/\n[ \t]+/g, ' ');
   const body = split === -1 ? '' : raw.slice(split + 2);
@@ -349,6 +341,7 @@ function decodeWords(s) {
 }
 
 function textPartOf(raw) {
+  raw = String(raw).split(String.fromCharCode(13,10)).join(String.fromCharCode(10));
   const p = parseHeaders(raw);
   const ct = p.h['content-type'] || '';
   const cte = (p.h['content-transfer-encoding'] || '').toLowerCase();
