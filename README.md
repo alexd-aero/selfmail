@@ -47,7 +47,7 @@ Because the tunnel connection is outbound-initiated, your router is never involv
   ```bash
   timeout 8 bash -c 'exec 3<>/dev/tcp/gmail-smtp-in.l.google.com/25' && echo open || echo BLOCKED
   ```
-- For relay mode: a public HTTPS URL pointing at the machine (a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or Tailscale Funnel both work and need no port forwarding)
+- For relay mode: a public HTTPS URL. **The installer can build one for you** — it downloads `cloudflared`, asks you to approve a Cloudflare sign-in in your browser, then publishes a permanent hostname and keeps it alive. No port forwarding. You can also supply your own URL instead.
 
 ---
 
@@ -59,6 +59,7 @@ Because the tunnel connection is outbound-initiated, your router is never involv
 - generates a 2048-bit DKIM key and wires OpenDKIM in as a milter
 - creates an unprivileged `vmail` user and Maildir storage
 - installs the web UI as a systemd service with `Restart=always`
+- optionally builds a Cloudflare Tunnel, plus a watchdog timer that re-checks the public URL every 2 minutes and restarts the tunnel if it stops answering (a hung tunnel keeps its process alive, so systemd alone cannot catch it)
 - pins outbound SMTP to IPv4 (see [Deliverability](#deliverability))
 - grants the app a **narrow** sudo allowlist — specific commands only, never blanket root
 

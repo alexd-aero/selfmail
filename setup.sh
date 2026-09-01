@@ -93,11 +93,25 @@ ask MODE_CHOICE "Choose 1 or 2" "1"
 if [ "$MODE_CHOICE" = "2" ]; then MODE="direct"; else MODE="relay"; fi
 
 WEBHOOK_BASE=""
+USE_CF=0
+TUNNEL_HOST=""
 if [ "$MODE" = "relay" ]; then
   say ""
-  say "  Relay mode needs a public HTTPS URL that reaches this app."
-  say "  A Cloudflare Tunnel or Tailscale Funnel works; leave blank to fill in later."
-  ask WEBHOOK_BASE "Public base URL (e.g. https://mailhook.example.com)" ""
+  say "  Relay mode needs a public HTTPS URL that reaches this machine."
+  say "  This installer can create a Cloudflare Tunnel for you: it downloads"
+  say "  cloudflared, opens a Cloudflare sign-in for you to approve in a"
+  say "  browser, then publishes a permanent hostname. No port forwarding."
+  ask CF_ANSWER "Set up a Cloudflare Tunnel now? (y/n)" "y"
+  case "$CF_ANSWER" in
+    y|Y|yes|YES)
+      USE_CF=1
+      ask TUNNEL_HOST "Hostname to publish (a domain in your Cloudflare account)" "mailhook.${MAIL_DOMAIN#*.}"
+      ;;
+    *)
+      say "  You can point any public HTTPS URL at this app instead."
+      ask WEBHOOK_BASE "Public base URL (leave blank to fill in later)" ""
+      ;;
+  esac
 fi
 
 DETECTED_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
@@ -155,6 +169,133 @@ else
 fi
 command -v node >/dev/null 2>&1 || die "Node.js could not be installed automatically; install Node 18+ and re-run"
 ok "packages installed (node $(node -v))"
+
+
+# ------------------------------------------------------------ cloudflare --
+if [ "$USE_CF" = 1 ]; then
+  step "Setting up Cloudflare Tunnel"
+
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    case "$(uname -m)" in
+      x86_64|amd64)   CF_ARCH=amd64 ;;
+      aarch64|arm64)  CF_ARCH=arm64 ;;
+      armv7l|armv6l)  CF_ARCH=arm ;;
+      *) die "unsupported architecture for cloudflared: $(uname -m)" ;;
+    esac
+    say "  downloading cloudflared ($CF_ARCH)..."
+    curl -fsSL --max-time 180       "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$CF_ARCH"       -o /tmp/cloudflared || die "could not download cloudflared"
+    install -m755 /tmp/cloudflared /usr/local/bin/cloudflared
+    rm -f /tmp/cloudflared
+  fi
+  ok "cloudflared $(cloudflared --version 2>/dev/null | awk '{print $3}')"
+
+  export TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem
+  mkdir -p /etc/cloudflared
+
+  if [ ! -f /etc/cloudflared/cert.pem ]; then
+    say ""
+    say "  ${B}Cloudflare sign-in required.${Z}"
+    say "  A URL will appear below. Open it in any browser, sign in, and"
+    say "  authorise the domain you entered. This installer waits for you."
+    say ""
+    cloudflared tunnel login || die "cloudflare login failed"
+    [ -f /etc/cloudflared/cert.pem ] || die "login did not produce a certificate"
+  fi
+  ok "authorised with Cloudflare"
+
+  TUNNEL_NAME="selfmail-$(echo "$TUNNEL_HOST" | tr '.' '-')"
+  if ! cloudflared tunnel list 2>/dev/null | grep -qw "$TUNNEL_NAME"; then
+    cloudflared tunnel create "$TUNNEL_NAME" >/dev/null || die "could not create tunnel"
+  fi
+  TUNNEL_ID="$(cloudflared tunnel list 2>/dev/null | awk -v n="$TUNNEL_NAME" '$2==n {print $1}' | head -1)"
+  [ -n "$TUNNEL_ID" ] || die "could not determine tunnel id"
+  ok "tunnel $TUNNEL_NAME ($TUNNEL_ID)"
+
+  # creates the CNAME in Cloudflare DNS automatically
+  cloudflared tunnel route dns "$TUNNEL_NAME" "$TUNNEL_HOST" >/dev/null 2>&1 ||     warn "DNS route already exists or could not be created; check the dashboard"
+
+  cat > /etc/cloudflared/config.yml <<CFG
+tunnel: $TUNNEL_ID
+credentials-file: /etc/cloudflared/$TUNNEL_ID.json
+loglevel: info
+
+ingress:
+  - hostname: $TUNNEL_HOST
+    service: http://localhost:$WEB_PORT
+  - service: http_status:404
+CFG
+  chmod 600 /etc/cloudflared/*.json 2>/dev/null || true
+
+  cat > /etc/systemd/system/selfmail-tunnel.service <<UNIT
+[Unit]
+Description=Cloudflare Tunnel for selfmail
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # A hung tunnel keeps its process alive, so systemd cannot detect it.
+  # Probe locally first: if the app is down, restarting the tunnel is pointless.
+  cat > /usr/local/bin/selfmail-health <<'HEALTH'
+#!/bin/bash
+. /etc/selfmail/env 2>/dev/null || exit 1
+HOST_PUB="$(awk '/hostname:/ {print $3; exit}' /etc/cloudflared/config.yml 2>/dev/null)"
+S="$SELFMAIL_INBOUND_SECRET"
+P="${SELFMAIL_PORT:-8088}"
+[ -n "$S" ] || exit 0
+D=/run/selfmail-health; mkdir -p "$D"
+bump() { local f="$D/$1" n; n=$(cat "$f" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" >"$f"; echo "$n"; }
+
+if curl -fsS --max-time 10 "http://127.0.0.1:$P/inbound/$S/ping" 2>/dev/null | grep -q '"ready":true'; then
+  rm -f "$D/local"
+else
+  n=$(bump local)
+  logger -t selfmail-health "local probe failed (strike $n)"
+  [ "$n" -ge 2 ] && { logger -t selfmail-health "restarting selfmail"; systemctl restart selfmail; rm -f "$D/local"; }
+  exit 0
+fi
+
+[ -n "$HOST_PUB" ] || exit 0
+if curl -fsS --max-time 25 "https://$HOST_PUB/inbound/$S/ping" 2>/dev/null | grep -q '"ready":true'; then
+  rm -f "$D/public"; exit 0
+fi
+n=$(bump public)
+logger -t selfmail-health "public probe via $HOST_PUB failed (strike $n)"
+[ "$n" -ge 2 ] && { logger -t selfmail-health "restarting tunnel"; systemctl restart selfmail-tunnel; rm -f "$D/public"; }
+HEALTH
+  chmod +x /usr/local/bin/selfmail-health
+
+  cat > /etc/systemd/system/selfmail-health.service <<UNIT
+[Unit]
+Description=Verify selfmail is reachable end to end
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/selfmail-health
+UNIT
+
+  cat > /etc/systemd/system/selfmail-health.timer <<UNIT
+[Unit]
+Description=Run the selfmail health check every 2 minutes
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=120s
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+UNIT
+
+  WEBHOOK_BASE="https://$TUNNEL_HOST"
+  ok "tunnel will publish https://$TUNNEL_HOST"
+fi
 
 # ----------------------------------------------------------- mail users ---
 step "Creating mail storage"
@@ -340,9 +481,16 @@ systemctl enable --now postfix >/dev/null 2>&1 || true
 systemctl restart postfix || true
 systemctl enable --now selfmail >/dev/null 2>&1 || true
 systemctl restart selfmail || true
-sleep 3
+if [ "$USE_CF" = 1 ]; then
+  systemctl enable --now selfmail-tunnel >/dev/null 2>&1 || true
+  systemctl restart selfmail-tunnel || true
+  systemctl enable --now selfmail-health.timer >/dev/null 2>&1 || true
+fi
+sleep 5
 
-for s in postfix opendkim selfmail; do
+SERVICES="postfix opendkim selfmail"
+[ "$USE_CF" = 1 ] && SERVICES="$SERVICES selfmail-tunnel"
+for s in $SERVICES; do
   if [ "$(systemctl is-active "$s")" = active ]; then ok "$s running"; else warn "$s is NOT running - check: journalctl -u $s -n 40"; fi
 done
 
@@ -359,8 +507,15 @@ say "  you need to add at your DNS host, and the ${B}Check records${Z} button ve
 say "  them live once you have saved them."
 say ""
 if [ "$MODE" = relay ]; then
+  if [ "$USE_CF" = 1 ]; then
+    say "  ${B}Public URL${Z}      https://$TUNNEL_HOST"
+    say "    The tunnel runs as selfmail-tunnel.service and restarts itself."
+    say "    selfmail-health.timer re-checks it every 2 minutes and restarts"
+    say "    it if the public URL stops answering."
+    say ""
+  fi
   if [ -n "$WEBHOOK_URL" ]; then
-    say "  Relay webhook URL:"
+    say "  Relay webhook URL (the DNS tab shows the TXT record to add):"
     say "    ${C}$WEBHOOK_URL${Z}"
   else
     say "  ${Y}Relay mode selected but no public URL was given.${Z}"
