@@ -264,6 +264,13 @@ chmod 750 /var/spool/postfix/opendkim
 chown -R opendkim:opendkim /etc/opendkim
 chmod 600 "/etc/opendkim/keys/$MAIL_DOMAIN/$SELECTOR.private"
 id -nG postfix 2>/dev/null | grep -qw opendkim || usermod -aG opendkim postfix 2>/dev/null || true
+
+# The web UI shows the DKIM *public* key so it can be pasted into DNS. Grant
+# read access through the opendkim group rather than widening permissions;
+# the private key stays 0600 and unreadable.
+usermod -aG opendkim "$APP_USER" 2>/dev/null || true
+chmod 750 /etc/opendkim /etc/opendkim/keys "/etc/opendkim/keys/$MAIL_DOMAIN"
+chmod 640 "/etc/opendkim/keys/$MAIL_DOMAIN/$SELECTOR.txt"
 ok "opendkim configured"
 
 # ------------------------------------------------------------------ app ---
