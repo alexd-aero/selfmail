@@ -1,0 +1,462 @@
+'use strict';
+
+const express = require('express');
+const nodemailer = require('nodemailer');
+const dns = require('dns').promises;
+const { execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const PORT = parseInt(process.env.SELFMAIL_PORT || '8088', 10);
+const CFG_FILE = process.env.SELFMAIL_CONFIG || '/etc/selfmail/config.json';
+const MAILROOT = process.env.SELFMAIL_MAILROOT || '/var/mail/vhosts';
+const USER = process.env.SELFMAIL_USER || 'admin';
+const PASS = process.env.SELFMAIL_PASS || '';
+const INBOUND_SECRET = process.env.SELFMAIL_INBOUND_SECRET || '';
+const APP_DIR = __dirname;
+const SENT_LOG = path.join(APP_DIR, 'sent.json');
+
+const NL = String.fromCharCode(10);
+
+const DEFAULTS = {
+  domain: '',            // right-hand side of addresses, e.g. mail.example.com
+  mxhost: '',            // this server's own name, e.g. mx.example.com
+  selector: 'mail',      // DKIM selector
+  publicIp: '',
+  mailbox: 'admin',      // local part of the primary mailbox
+  fromName: '',
+  defaultTo: '',
+  dmarcRua: '',
+  dmarcPolicy: 'none',
+  mode: 'direct',        // 'direct' = own MX on port 25 | 'relay' = webhook
+  relayProvider: 'forwardemail',
+  webhookUrl: '',        // public https URL of this app, for relay mode
+};
+
+function loadCfg() {
+  try {
+    return Object.assign({}, DEFAULTS, JSON.parse(fs.readFileSync(CFG_FILE, 'utf8')));
+  } catch (e) {
+    return Object.assign({}, DEFAULTS);
+  }
+}
+function saveCfg(c) {
+  fs.mkdirSync(path.dirname(CFG_FILE), { recursive: true });
+  fs.writeFileSync(CFG_FILE, JSON.stringify(c, null, 2));
+}
+
+const app = express();
+app.set('trust proxy', true);
+
+const sh = (cmd, args) => new Promise(function (resolve) {
+  execFile(cmd, args, { timeout: 20000, maxBuffer: 8e6 }, function (e, so, se) {
+    resolve((so || '') + (se || ''));
+  });
+});
+
+// ---------------------------------------------------------------------
+// Inbound webhook. Mounted BEFORE auth: a mail relay posts here and
+// cannot present basic-auth credentials, so the path secret authorises it.
+// ---------------------------------------------------------------------
+app.use('/inbound', express.text({ type: '*/*', limit: '30mb' }));
+
+app.post('/inbound/:secret', async (req, res) => {
+  if (!INBOUND_SECRET || req.params.secret !== INBOUND_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const c = loadCfg();
+  let raw = req.body;
+  if (raw && typeof raw === 'object') raw = JSON.stringify(raw);
+  raw = String(raw || '');
+
+  // Relays differ: some POST raw MIME, others wrap it in JSON. Accept both,
+  // and rebuild a message from fields when no raw copy is included.
+  if (raw.charAt(0) === '{') {
+    try {
+      const o = JSON.parse(raw);
+      let r = o.raw || o.message || o.email || o.mime;
+      if (r && typeof r === 'object') r = r.raw || r.data || null;
+      if (!r) {
+        const addr = function (v) {
+          if (!v) return '';
+          if (typeof v === 'string') return v;
+          if (Array.isArray(v)) return v.map(addr).join(', ');
+          return v.text || v.address || (v.value ? addr(v.value) : '');
+        };
+        const h = [];
+        h.push('From: ' + (addr(o.from) || 'unknown@unknown'));
+        h.push('To: ' + (addr(o.to) || c.mailbox + '@' + c.domain));
+        if (o.subject) h.push('Subject: ' + o.subject);
+        h.push('Date: ' + (o.date || new Date().toUTCString()));
+        if (o.messageId) h.push('Message-ID: ' + o.messageId);
+        const isHtml = !o.text && o.html;
+        h.push('Content-Type: text/' + (isHtml ? 'html' : 'plain') + '; charset=utf-8');
+        r = h.join(NL) + NL + NL + (o.text || o.html || '');
+      }
+      raw = r;
+    } catch (e) { /* not JSON after all */ }
+  }
+  if (!raw.trim()) return res.status(400).json({ error: 'empty body' });
+
+  const dir = MAILROOT + '/' + c.domain + '/' + c.mailbox + '/new';
+  const name = Math.floor(Date.now() / 1000) + '.M' + process.hrtime.bigint() % 1000000n +
+    'P' + process.pid + '.selfmail';
+  const tmp = '/tmp/' + name;
+  try {
+    fs.writeFileSync(tmp, raw);
+    await sh('sudo', ['install', '-o', 'vmail', '-g', 'vmail', '-m', '600', tmp, dir + '/' + name]);
+    fs.unlinkSync(tmp);
+    console.log('inbound: stored ' + name + ' (' + raw.length + ' bytes)');
+    res.json({ ok: true, stored: name, bytes: raw.length });
+  } catch (e) {
+    console.error('inbound failed: ' + e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/inbound/:secret/ping', (req, res) => {
+  if (!INBOUND_SECRET || req.params.secret !== INBOUND_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  res.json({ ok: true, ready: true });
+});
+
+// ---------------------------------------------------------------------
+// Everything below requires auth.
+// ---------------------------------------------------------------------
+app.use(express.json({ limit: '25mb' }));
+app.use(function (req, res, next) {
+  if (!PASS) return next(); // unconfigured: setup.sh always sets one
+  const parts = (req.headers.authorization || '').split(' ');
+  if (parts[0] === 'Basic' && parts[1]) {
+    const dec = Buffer.from(parts[1], 'base64').toString().split(':');
+    if (dec[0] === USER && dec.slice(1).join(':') === PASS) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="selfmail"').status(401).send('auth required');
+});
+app.use(express.static(path.join(APP_DIR, 'public')));
+
+const transport = nodemailer.createTransport({
+  host: '127.0.0.1', port: 25, secure: false, ignoreTLS: true,
+});
+
+const readSent = () => {
+  try { return JSON.parse(fs.readFileSync(SENT_LOG, 'utf8')); } catch (e) { return []; }
+};
+
+// --- settings ---------------------------------------------------------
+app.get('/api/settings', (req, res) => res.json(loadCfg()));
+
+app.post('/api/settings', (req, res) => {
+  const next = loadCfg();
+  Object.keys(DEFAULTS).forEach(function (k) {
+    if (typeof req.body[k] === 'string') next[k] = req.body[k].trim();
+  });
+  saveCfg(next);
+  res.json(next);
+});
+
+// --- DNS records ------------------------------------------------------
+function dkimPublic(c) {
+  const f = '/etc/opendkim/keys/' + c.domain + '/' + c.selector + '.txt';
+  try {
+    const raw = fs.readFileSync(f, 'utf8');
+    const parts = raw.match(/"([^"]*)"/g) || [];
+    return parts.map(function (s) { return s.slice(1, -1); }).join('');
+  } catch (e) { return ''; }
+}
+
+function buildRecords(c) {
+  const recs = [];
+  const zoneHint = 'Name is relative to your zone; your DNS host may append the domain automatically.';
+
+  recs.push({
+    key: 'a', type: 'A', name: c.mxhost, content: c.publicIp,
+    note: 'This server. Must be unproxied / "DNS only" on Cloudflare, or SPF breaks. ' + zoneHint,
+  });
+
+  if (c.mode === 'relay') {
+    recs.push({
+      key: 'mx1', type: 'MX', name: c.domain, content: 'mx1.forwardemail.net', priority: 10,
+      note: 'Relay takes delivery on port 25 and forwards to your webhook.',
+    });
+    recs.push({
+      key: 'mx2', type: 'MX', name: c.domain, content: 'mx2.forwardemail.net', priority: 20,
+      note: 'Backup relay host.',
+    });
+    recs.push({
+      key: 'hook', type: 'TXT', name: c.domain,
+      content: 'forward-email=' + (c.webhookUrl || 'https://YOUR-PUBLIC-URL/inbound/SECRET'),
+      note: 'Tells the relay where to deliver. This coexists with the SPF TXT record below - do not merge them.',
+    });
+  } else {
+    recs.push({
+      key: 'mx1', type: 'MX', name: c.domain, content: c.mxhost, priority: 10,
+      note: 'Mail is delivered straight to this server on port 25.',
+    });
+  }
+
+  recs.push({
+    key: 'spf', type: 'TXT', name: c.domain,
+    content: 'v=spf1 ip4:' + c.publicIp + ' -all',
+    note: 'Authorises this server to send as @' + c.domain + '.',
+  });
+  recs.push({
+    key: 'dkim', type: 'TXT', name: c.selector + '._domainkey.' + c.domain,
+    content: dkimPublic(c) || '(DKIM key not generated yet)',
+    note: 'Public half of the DKIM signing key. Paste as one line.',
+  });
+  let dmarc = 'v=DMARC1; p=' + (c.dmarcPolicy || 'none');
+  if (c.dmarcRua) dmarc += '; rua=mailto:' + c.dmarcRua;
+  recs.push({
+    key: 'dmarc', type: 'TXT', name: '_dmarc.' + c.domain, content: dmarc,
+    note: c.dmarcRua
+      ? 'Reports only arrive if the destination domain authorises you.'
+      : 'No report address set.',
+  });
+  return recs;
+}
+
+app.get('/api/dns-records', (req, res) => res.json(buildRecords(loadCfg())));
+
+// --- DNS check --------------------------------------------------------
+// Resolves each expected record and reports pass/fail with what was found,
+// so a wrong or missing record is obvious rather than a generic failure.
+app.get('/api/dns-check', async (req, res) => {
+  const c = loadCfg();
+  const recs = buildRecords(c);
+  const out = [];
+
+  for (const r of recs) {
+    const row = { key: r.key, type: r.type, name: r.name, expected: r.content, ok: false, found: '', detail: '' };
+    try {
+      if (r.type === 'A') {
+        const v = await dns.resolve4(r.name);
+        row.found = v.join(', ');
+        row.ok = v.indexOf(r.content) !== -1;
+        if (!row.ok && v.length) row.detail = 'Resolves elsewhere - if this is Cloudflare, switch the record to "DNS only".';
+      } else if (r.type === 'MX') {
+        const v = await dns.resolveMx(r.name);
+        row.found = v.map(function (x) { return x.priority + ' ' + x.exchange; }).join(', ');
+        row.ok = v.some(function (x) {
+          return x.exchange.replace(/\.$/, '').toLowerCase() === r.content.toLowerCase();
+        });
+      } else {
+        const v = await dns.resolveTxt(r.name);
+        const joined = v.map(function (x) { return x.join(''); });
+        row.found = joined.join(' | ');
+        if (r.key === 'spf') {
+          row.ok = joined.some(function (x) { return x.trim() === r.content; });
+          if (!row.ok && joined.some(function (x) { return x.indexOf('v=spf1') === 0; })) {
+            row.detail = 'An SPF record exists but does not match exactly.';
+          }
+        } else if (r.key === 'dkim') {
+          const want = (r.content.match(/p=([A-Za-z0-9+/=]+)/) || [])[1];
+          row.ok = !!want && joined.some(function (x) { return x.indexOf(want) !== -1; });
+          if (!row.ok && joined.length) row.detail = 'A DKIM record exists but the key does not match the one on this server.';
+        } else if (r.key === 'hook') {
+          row.ok = joined.some(function (x) { return x.trim() === r.content; });
+        } else {
+          row.ok = joined.some(function (x) { return x.indexOf('v=DMARC1') === 0; });
+        }
+      }
+    } catch (e) {
+      row.detail = e.code === 'ENOTFOUND' || e.code === 'ENODATA' ? 'No such record found.' : String(e.code || e.message);
+    }
+    out.push(row);
+  }
+
+  const okCount = out.filter(function (x) { return x.ok; }).length;
+  res.json({ records: out, ok: okCount, total: out.length, allGood: okCount === out.length });
+});
+
+// --- send -------------------------------------------------------------
+app.post('/api/send', async (req, res) => {
+  const c = loadCfg();
+  const b = req.body || {};
+  if (!b.from || !b.to || !b.subject) {
+    return res.status(400).json({ error: 'from, to and subject are required' });
+  }
+  if (String(b.from).split('@')[1] !== c.domain) {
+    return res.status(400).json({ error: 'From must be @' + c.domain + ' or DKIM will not sign it' });
+  }
+  const rcpts = String(b.to).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+
+  // Always include a plain-text alternative: HTML-only bodies score poorly.
+  let textPart = b.text;
+  if (!textPart && b.html) {
+    textPart = String(b.html)
+      .replace(new RegExp('<br[^>]*>', 'gi'), NL)
+      .replace(new RegExp('</(p|div|h[1-6]|li|tr)>', 'gi'), NL)
+      .replace(new RegExp('<[^>]+>', 'g'), '')
+      .replace(new RegExp('&nbsp;', 'g'), ' ')
+      .replace(new RegExp('&amp;', 'g'), '&')
+      .replace(new RegExp(NL + '{3,}', 'g'), NL + NL)
+      .trim();
+  }
+
+  try {
+    const info = await transport.sendMail({
+      from: c.fromName ? '"' + c.fromName + '" <' + b.from + '>' : b.from,
+      to: rcpts.join(', '),
+      subject: b.subject,
+      replyTo: b.replyTo || undefined,
+      text: textPart || undefined,
+      html: b.html || undefined,
+      envelope: { from: b.from, to: rcpts },
+      textEncoding: 'quoted-printable',
+    });
+    const rec = { ts: new Date().toISOString(), from: b.from, to: b.to, subject: b.subject, response: info.response, ok: true };
+    const all = readSent(); all.unshift(rec);
+    fs.writeFileSync(SENT_LOG, JSON.stringify(all.slice(0, 200), null, 2));
+    res.json(rec);
+  } catch (e) {
+    const rec = { ts: new Date().toISOString(), from: b.from, to: b.to, subject: b.subject, error: e.message, ok: false };
+    const all = readSent(); all.unshift(rec);
+    fs.writeFileSync(SENT_LOG, JSON.stringify(all.slice(0, 200), null, 2));
+    res.status(500).json(rec);
+  }
+});
+
+app.get('/api/sent', (req, res) => res.json(readSent()));
+
+// --- inbox ------------------------------------------------------------
+function parseHeaders(raw) {
+  const split = raw.indexOf(NL + NL);
+  const head = (split === -1 ? raw : raw.slice(0, split)).replace(/\n[ \t]+/g, ' ');
+  const body = split === -1 ? '' : raw.slice(split + 2);
+  const h = {};
+  head.split(NL).forEach(function (line) {
+    const i = line.indexOf(':');
+    if (i > 0) {
+      const k = line.slice(0, i).trim().toLowerCase();
+      if (!h[k]) h[k] = line.slice(i + 1).trim();
+    }
+  });
+  return { h: h, body: body };
+}
+
+function decodeWords(s) {
+  if (!s) return '';
+  return String(s).replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, function (_, cs, enc, txt) {
+    try {
+      if (enc.toUpperCase() === 'B') return Buffer.from(txt, 'base64').toString('utf8');
+      return Buffer.from(txt.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, function (m, hx) {
+        return String.fromCharCode(parseInt(hx, 16));
+      }), 'binary').toString('utf8');
+    } catch (e) { return txt; }
+  });
+}
+
+function textPartOf(raw) {
+  const p = parseHeaders(raw);
+  const ct = p.h['content-type'] || '';
+  const cte = (p.h['content-transfer-encoding'] || '').toLowerCase();
+  let body = p.body;
+  const m = /boundary="?([^";\s]+)"?/i.exec(ct);
+  if (m) {
+    const parts = body.split('--' + m[1]);
+    for (let i = 0; i < parts.length; i++) {
+      if (/content-type:\s*text\/plain/i.test(parts[i])) return textPartOf(parts[i].replace(/^\r?\n/, ''));
+    }
+    for (let i = 0; i < parts.length; i++) {
+      if (/content-type:\s*text\/html/i.test(parts[i])) return textPartOf(parts[i].replace(/^\r?\n/, ''));
+    }
+  }
+  if (cte === 'base64') { try { body = Buffer.from(body, 'base64').toString('utf8'); } catch (e) {} }
+  else if (cte === 'quoted-printable') {
+    body = body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, function (m2, hx) {
+      return String.fromCharCode(parseInt(hx, 16));
+    });
+  }
+  return body;
+}
+
+const sudoRead = (f) => new Promise(function (resolve) {
+  execFile('sudo', ['cat', f], { maxBuffer: 8e6, timeout: 15000 }, function (e, so) { resolve(so || ''); });
+});
+
+function boxDir(c) { return MAILROOT + '/' + c.domain + '/' + c.mailbox; }
+
+app.get('/api/inbox', async (req, res) => {
+  const c = loadCfg();
+  const box = boxDir(c);
+  const out = await sh('sudo', ['find', box + '/new', box + '/cur', '-type', 'f', '-printf', '%T@\\t%p\\n']);
+  const files = out.split(NL).filter(Boolean).map(function (l) {
+    const a = l.split('\t');
+    return { t: parseFloat(a[0]), f: a[1] };
+  }).filter(function (x) { return x.f; })
+    .sort(function (a, b) { return b.t - a.t; })
+    .slice(0, 80);
+
+  const msgs = [];
+  for (const it of files) {
+    const raw = await sudoRead(it.f);
+    const p = parseHeaders(raw.slice(0, 8000));
+    msgs.push({
+      id: Buffer.from(it.f).toString('base64'),
+      from: decodeWords(p.h.from || ''),
+      to: decodeWords(p.h.to || ''),
+      subject: decodeWords(p.h.subject || '(no subject)'),
+      date: p.h.date || new Date(it.t * 1000).toUTCString(),
+      unread: it.f.indexOf('/new/') !== -1,
+    });
+  }
+  res.json(msgs);
+});
+
+app.get('/api/inbox/msg', async (req, res) => {
+  let f;
+  try { f = Buffer.from(String(req.query.id || ''), 'base64').toString('utf8'); }
+  catch (e) { return res.status(400).json({ error: 'bad id' }); }
+  if (f.indexOf(MAILROOT) !== 0 || f.indexOf('..') !== -1) return res.status(400).json({ error: 'bad path' });
+  const raw = await sudoRead(f);
+  if (!raw) return res.status(404).json({ error: 'not found' });
+  const p = parseHeaders(raw);
+  res.json({
+    from: decodeWords(p.h.from || ''), to: decodeWords(p.h.to || ''),
+    subject: decodeWords(p.h.subject || '(no subject)'), date: p.h.date || '',
+    authResults: p.h['authentication-results'] || '',
+    dkim: p.h['dkim-signature'] ? 'present' : 'none',
+    body: textPartOf(raw).slice(0, 200000),
+  });
+});
+
+app.get('/api/addresses', async (req, res) => {
+  const c = loadCfg();
+  const domRaw = (await sh('sudo', ['postconf', '-h', 'virtual_mailbox_domains'])).trim();
+  const domains = domRaw.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+  const boxRaw = await sh('sudo', ['postmap', '-s', 'hash:/etc/postfix/vmailbox']);
+  const mailboxes = boxRaw.split(NL).map(function (l) { return l.split(/\s+/)[0]; })
+    .filter(function (x) { return x && x.indexOf('@') !== -1; });
+  res.json(domains.map(function (d) {
+    return {
+      domain: d,
+      addresses: mailboxes.filter(function (m) { return m.split('@')[1] === d; }),
+      catchAll: true,
+      mode: c.mode,
+    };
+  }));
+});
+
+// --- status -----------------------------------------------------------
+app.get('/api/status', async (req, res) => {
+  const c = loadCfg();
+  const out = { cfg: c };
+  out.currentIp = (await sh('curl', ['-4', '-s', '--max-time', '8', 'https://api.ipify.org'])).trim();
+  out.ipMatchesConfig = out.currentIp === c.publicIp;
+  out.queue = (await sh('mailq', [])).trim().slice(-4000);
+  out.postfix = (await sh('systemctl', ['is-active', 'postfix'])).trim();
+  out.opendkim = (await sh('systemctl', ['is-active', 'opendkim'])).trim();
+  res.json(out);
+});
+
+app.get('/api/log', async (req, res) => {
+  let t = await sh('sudo', ['tail', '-n', '200', '/var/log/mail.log']);
+  if (!t.trim()) t = await sh('sudo', ['tail', '-n', '200', '/var/log/maillog']);
+  res.type('text/plain').send(t || '(no mail log readable)');
+});
+
+app.listen(PORT, '0.0.0.0', function () {
+  console.log('selfmail listening on :' + PORT);
+});

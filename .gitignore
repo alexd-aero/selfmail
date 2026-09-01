@@ -1,0 +1,4 @@
+node_modules/
+sent.json
+*.log
+config.json

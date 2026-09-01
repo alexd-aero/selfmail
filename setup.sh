@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+#
+# selfmail installer
+#
+# Sets up Postfix + OpenDKIM + the selfmail web UI on a Linux host.
+# Designed for machines that cannot receive on port 25 (home servers behind
+# NAT), which is why "relay" mode exists alongside classic direct delivery.
+#
+# Usage:  sudo ./setup.sh
+#
+set -euo pipefail
+
+APP_NAME="selfmail"
+APP_USER="selfmail"
+APP_DIR="/opt/selfmail"
+CFG_DIR="/etc/selfmail"
+CFG_FILE="$CFG_DIR/config.json"
+ENV_FILE="$CFG_DIR/env"
+MAILROOT="/var/mail/vhosts"
+PORT_DEFAULT=8088
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------- output --
+if [ -t 1 ]; then
+  B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; C=$'\e[36m'; Z=$'\e[0m'
+else
+  B=""; G=""; Y=""; R=""; C=""; Z=""
+fi
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n%s==>%s %s%s%s\n' "$C" "$Z" "$B" "$*" "$Z"; }
+ok()   { printf '  %s+%s %s\n' "$G" "$Z" "$*"; }
+warn() { printf '  %s!%s %s\n' "$Y" "$Z" "$*"; }
+die()  { printf '\n%sError:%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "run with sudo:  sudo ./setup.sh"
+
+# ------------------------------------------------------------ platform ----
+step "Checking platform"
+PM=""
+if   command -v apt-get >/dev/null 2>&1; then PM=apt
+elif command -v dnf     >/dev/null 2>&1; then PM=dnf
+elif command -v yum     >/dev/null 2>&1; then PM=yum
+else die "no supported package manager found (need apt, dnf or yum)"
+fi
+command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+. /etc/os-release 2>/dev/null || true
+ok "${PRETTY_NAME:-unknown Linux} using $PM"
+
+MAILLOG=/var/log/mail.log
+[ "$PM" = apt ] || MAILLOG=/var/log/maillog
+
+# -------------------------------------------------------------- prompts ---
+step "Configuration"
+say "  Answer a few questions. Press Enter to accept the [default]."
+say ""
+
+# Reads from the terminal when there is one, otherwise from stdin, so the
+# installer can also be driven from a here-doc for unattended installs.
+INTERACTIVE=0
+[ -t 0 ] && [ -e /dev/tty ] && INTERACTIVE=1
+
+ask() { # ask VAR "prompt" "default"
+  local __v="$1" __p="$2" __d="${3:-}" __in=""
+  if [ -n "$__d" ]; then printf '  %s [%s]: ' "$__p" "$__d"; else printf '  %s: ' "$__p"; fi
+  if [ "$INTERACTIVE" = 1 ]; then read -r __in </dev/tty || true; else read -r __in || true; printf '%s\n' "$__in"; fi
+  [ -z "$__in" ] && __in="$__d"
+  printf -v "$__v" '%s' "$__in"
+}
+
+MAIL_DOMAIN=""
+while [ -z "$MAIL_DOMAIN" ]; do
+  ask MAIL_DOMAIN "Mail domain (right-hand side of your addresses, e.g. mail.example.com)"
+  case "$MAIL_DOMAIN" in
+    *.*) : ;;
+    *) warn "that does not look like a domain"; MAIL_DOMAIN="" ;;
+  esac
+done
+
+DEFAULT_MX="mx.${MAIL_DOMAIN#*.}"
+ask MX_HOST "Hostname for this server (used as the SMTP HELO name)" "$DEFAULT_MX"
+ask MAILBOX "Mailbox name (the part before the @)" "admin"
+ask SELECTOR "DKIM selector" "mail"
+ask WEB_PORT "Port for the web interface" "$PORT_DEFAULT"
+
+say ""
+say "  ${B}How will inbound mail reach this machine?${Z}"
+say "    1) direct - this host owns port 25 and receives mail itself."
+say "                Requires inbound TCP 25 from the internet."
+say "    2) relay  - a free relay accepts mail and posts it to a public"
+say "                HTTPS URL for this app. Use this behind NAT when you"
+say "                cannot open port 25."
+ask MODE_CHOICE "Choose 1 or 2" "1"
+if [ "$MODE_CHOICE" = "2" ]; then MODE="relay"; else MODE="direct"; fi
+
+WEBHOOK_BASE=""
+if [ "$MODE" = "relay" ]; then
+  say ""
+  say "  Relay mode needs a public HTTPS URL that reaches this app."
+  say "  A Cloudflare Tunnel or Tailscale Funnel works; leave blank to fill in later."
+  ask WEBHOOK_BASE "Public base URL (e.g. https://mailhook.example.com)" ""
+fi
+
+DETECTED_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+ask PUBLIC_IP "Public IPv4 address of this server" "$DETECTED_IP"
+[ -n "$PUBLIC_IP" ] || die "a public IP is required for the SPF record"
+
+ADMIN_USER=""
+ask ADMIN_USER "Web interface username" "admin"
+ADMIN_PASS=""
+printf '  Web interface password [blank = generate one]: '
+if [ "$INTERACTIVE" = 1 ]; then read -r -s ADMIN_PASS </dev/tty || true; else read -r ADMIN_PASS || true; fi
+printf '\n'
+GENERATED_PASS=0
+if [ -z "$ADMIN_PASS" ]; then
+  ADMIN_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
+  GENERATED_PASS=1
+fi
+INBOUND_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | cut -c1-28)"
+
+say ""
+say "  ${B}Summary${Z}"
+say "    domain      @$MAIL_DOMAIN"
+say "    address     $MAILBOX@$MAIL_DOMAIN"
+say "    hostname    $MX_HOST"
+say "    public IP   $PUBLIC_IP"
+say "    mode        $MODE"
+say "    web UI      http://<this-host>:$WEB_PORT  (user $ADMIN_USER)"
+say ""
+ask CONFIRM "Proceed? (y/n)" "y"
+case "$CONFIRM" in y|Y|yes|YES) : ;; *) die "aborted" ;; esac
+
+# ------------------------------------------------------------- packages ---
+step "Installing packages"
+export DEBIAN_FRONTEND=noninteractive
+
+# Unattended upgrades or a concurrent install will hold the dpkg lock and make
+# apt fail outright, so wait for it rather than dying on a transient conflict.
+wait_for_apt() {
+  local waited=0
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+     || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+    [ "$waited" = 0 ] && warn "another package manager is running; waiting for it to finish"
+    sleep 5
+    waited=$((waited + 5))
+    if [ "$waited" -ge 300 ]; then
+      die "timed out after 5 minutes waiting for the dpkg lock; re-run once it is free"
+    fi
+  done
+}
+
+if [ "$PM" = apt ]; then
+  wait_for_apt
+  # preseed so postfix does not open an interactive dialog
+  echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
+  echo "postfix postfix/mailname string $MX_HOST" | debconf-set-selections
+  apt-get update -qq
+  apt-get install -y -qq postfix opendkim opendkim-tools curl ca-certificates \
+    dnsutils psmisc sudo >/dev/null
+  if ! command -v node >/dev/null 2>&1; then
+    apt-get install -y -qq nodejs npm >/dev/null || true
+  fi
+else
+  $PM install -y -q postfix opendkim opendkim-tools curl bind-utils psmisc sudo >/dev/null
+  command -v node >/dev/null 2>&1 || $PM install -y -q nodejs npm >/dev/null || true
+fi
+command -v node >/dev/null 2>&1 || die "Node.js could not be installed automatically; install Node 18+ and re-run"
+ok "packages installed (node $(node -v))"
+
+# ----------------------------------------------------------- mail users ---
+step "Creating mail storage"
+getent group vmail >/dev/null || groupadd -g 5000 vmail
+getent passwd vmail >/dev/null || useradd -g vmail -u 5000 -d "$MAILROOT" -s /usr/sbin/nologin vmail
+mkdir -p "$MAILROOT/$MAIL_DOMAIN/$MAILBOX"/{new,cur,tmp}
+chown -R vmail:vmail "$MAILROOT"
+chmod 770 "$MAILROOT"
+ok "maildir at $MAILROOT/$MAIL_DOMAIN/$MAILBOX"
+
+id "$APP_USER" >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d "$APP_DIR" "$APP_USER"
+
+# -------------------------------------------------------------- postfix ---
+step "Configuring Postfix"
+cp -n /etc/postfix/main.cf "/etc/postfix/main.cf.selfmail-backup" 2>/dev/null || true
+
+printf '%s@%s\t%s/%s/\npostmaster@%s\t%s/%s/\n' \
+  "$MAILBOX" "$MAIL_DOMAIN" "$MAIL_DOMAIN" "$MAILBOX" \
+  "$MAIL_DOMAIN" "$MAIL_DOMAIN" "$MAILBOX" > /etc/postfix/vmailbox
+postmap /etc/postfix/vmailbox
+printf '@%s\t%s@%s\n' "$MAIL_DOMAIN" "$MAILBOX" "$MAIL_DOMAIN" > /etc/postfix/virtual
+postmap /etc/postfix/virtual
+
+postconf -e \
+  "myhostname = $MX_HOST" \
+  "smtpd_banner = \$myhostname ESMTP" \
+  "mydestination = localhost" \
+  "mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128" \
+  "inet_interfaces = all" \
+  "inet_protocols = all" \
+  "smtp_address_preference = ipv4" \
+  "disable_vrfy_command = yes" \
+  "smtpd_helo_required = yes" \
+  "smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination" \
+  "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination" \
+  "smtpd_client_connection_count_limit = 10" \
+  "smtpd_client_connection_rate_limit = 30" \
+  "smtpd_error_sleep_time = 5s" \
+  "smtpd_soft_error_limit = 3" \
+  "smtpd_hard_error_limit = 8" \
+  "smtp_tls_security_level = may" \
+  "smtp_tls_loglevel = 1" \
+  "smtpd_tls_security_level = may" \
+  "virtual_mailbox_domains = $MAIL_DOMAIN" \
+  "virtual_mailbox_base = $MAILROOT" \
+  "virtual_mailbox_maps = hash:/etc/postfix/vmailbox" \
+  "virtual_alias_maps = hash:/etc/postfix/virtual" \
+  "virtual_minimum_uid = 100" \
+  "virtual_uid_maps = static:5000" \
+  "virtual_gid_maps = static:5000" \
+  "milter_default_action = accept" \
+  "milter_protocol = 6" \
+  "smtpd_milters = local:/opendkim/opendkim.sock" \
+  "non_smtpd_milters = local:/opendkim/opendkim.sock"
+
+# Sending over IPv6 without a PTR record gets rejected by major providers,
+# so pin the outbound client to IPv4 while still listening on both.
+postconf -P 'smtp/unix/inet_protocols=ipv4' 2>/dev/null || true
+ok "postfix configured for @$MAIL_DOMAIN"
+
+# --------------------------------------------------------------- opendkim -
+step "Generating DKIM key"
+mkdir -p "/etc/opendkim/keys/$MAIL_DOMAIN"
+if [ ! -f "/etc/opendkim/keys/$MAIL_DOMAIN/$SELECTOR.private" ]; then
+  ( cd "/etc/opendkim/keys/$MAIL_DOMAIN" && opendkim-genkey -b 2048 -d "$MAIL_DOMAIN" -s "$SELECTOR" )
+  ok "2048-bit key created"
+else
+  warn "existing key kept"
+fi
+
+cat > /etc/opendkim.conf <<CONF
+Syslog                  yes
+SyslogSuccess           yes
+UMask                   007
+Mode                    sv
+Canonicalization        relaxed/simple
+SubDomains              no
+OversignHeaders         From
+Socket                  local:/var/spool/postfix/opendkim/opendkim.sock
+PidFile                 /run/opendkim/opendkim.pid
+UserID                  opendkim:postfix
+KeyTable                /etc/opendkim/key.table
+SigningTable            refile:/etc/opendkim/signing.table
+ExternalIgnoreList      /etc/opendkim/trusted.hosts
+InternalHosts           /etc/opendkim/trusted.hosts
+CONF
+
+echo "$SELECTOR._domainkey.$MAIL_DOMAIN $MAIL_DOMAIN:$SELECTOR:/etc/opendkim/keys/$MAIL_DOMAIN/$SELECTOR.private" > /etc/opendkim/key.table
+echo "*@$MAIL_DOMAIN $SELECTOR._domainkey.$MAIL_DOMAIN" > /etc/opendkim/signing.table
+printf '127.0.0.1\nlocalhost\n%s\n' "$MAIL_DOMAIN" > /etc/opendkim/trusted.hosts
+
+mkdir -p /var/spool/postfix/opendkim /run/opendkim
+chown opendkim:postfix /var/spool/postfix/opendkim
+chown opendkim:opendkim /run/opendkim
+chmod 750 /var/spool/postfix/opendkim
+chown -R opendkim:opendkim /etc/opendkim
+chmod 600 "/etc/opendkim/keys/$MAIL_DOMAIN/$SELECTOR.private"
+id -nG postfix 2>/dev/null | grep -qw opendkim || usermod -aG opendkim postfix 2>/dev/null || true
+ok "opendkim configured"
+
+# ------------------------------------------------------------------ app ---
+step "Installing the web interface"
+mkdir -p "$APP_DIR"
+cp -r "$SRC_DIR/server.js" "$SRC_DIR/package.json" "$SRC_DIR/public" "$APP_DIR/"
+( cd "$APP_DIR" && npm install --omit=dev --silent --no-audit --no-fund >/dev/null 2>&1 )
+chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
+ok "app installed to $APP_DIR"
+
+mkdir -p "$CFG_DIR"
+WEBHOOK_URL=""
+[ -n "$WEBHOOK_BASE" ] && WEBHOOK_URL="${WEBHOOK_BASE%/}/inbound/$INBOUND_SECRET"
+
+cat > "$CFG_FILE" <<JSON
+{
+  "domain": "$MAIL_DOMAIN",
+  "mxhost": "$MX_HOST",
+  "selector": "$SELECTOR",
+  "publicIp": "$PUBLIC_IP",
+  "mailbox": "$MAILBOX",
+  "fromName": "",
+  "defaultTo": "",
+  "dmarcRua": "",
+  "dmarcPolicy": "none",
+  "mode": "$MODE",
+  "relayProvider": "forwardemail",
+  "webhookUrl": "$WEBHOOK_URL"
+}
+JSON
+chown "$APP_USER":"$APP_USER" "$CFG_FILE"
+chmod 640 "$CFG_FILE"
+
+cat > "$ENV_FILE" <<ENV
+SELFMAIL_PORT=$WEB_PORT
+SELFMAIL_USER=$ADMIN_USER
+SELFMAIL_PASS=$ADMIN_PASS
+SELFMAIL_INBOUND_SECRET=$INBOUND_SECRET
+SELFMAIL_CONFIG=$CFG_FILE
+SELFMAIL_MAILROOT=$MAILROOT
+ENV
+chown root:"$APP_USER" "$ENV_FILE"
+chmod 640 "$ENV_FILE"
+
+# The app reads maildirs owned by vmail and queries postfix, so it needs a
+# few specific commands as root - listed explicitly rather than blanket sudo.
+cat > /etc/sudoers.d/selfmail <<SUDO
+$APP_USER ALL=(root) NOPASSWD: /usr/bin/cat, /usr/bin/find, /usr/bin/install, /usr/bin/tail, /usr/sbin/postconf, /usr/sbin/postmap, /bin/cat, /bin/find, /usr/bin/mailq
+SUDO
+chmod 440 /etc/sudoers.d/selfmail
+visudo -cf /etc/sudoers.d/selfmail >/dev/null || die "generated sudoers file is invalid"
+ok "configuration written to $CFG_DIR"
+
+# -------------------------------------------------------------- systemd ---
+step "Installing services"
+cat > /etc/systemd/system/selfmail.service <<UNIT
+[Unit]
+Description=selfmail web interface
+After=network-online.target postfix.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$APP_USER
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$(command -v node) $APP_DIR/server.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now opendkim >/dev/null 2>&1 || true
+systemctl restart opendkim || true
+systemctl enable --now postfix >/dev/null 2>&1 || true
+systemctl restart postfix || true
+systemctl enable --now selfmail >/dev/null 2>&1 || true
+systemctl restart selfmail || true
+sleep 3
+
+for s in postfix opendkim selfmail; do
+  if [ "$(systemctl is-active "$s")" = active ]; then ok "$s running"; else warn "$s is NOT running - check: journalctl -u $s -n 40"; fi
+done
+
+# ---------------------------------------------------------------- finish --
+IP_SHOW="$(hostname -I 2>/dev/null | awk '{print $1}')"
+step "Done"
+say ""
+say "  ${B}Web interface${Z}   http://${IP_SHOW:-localhost}:$WEB_PORT"
+say "  ${B}Username${Z}        $ADMIN_USER"
+if [ "$GENERATED_PASS" = 1 ]; then
+  say "  ${B}Password${Z}        $ADMIN_PASS   ${Y}(generated - save this now)${Z}"
+else
+  say "  ${B}Password${Z}        (the one you entered)"
+fi
+say ""
+say "  Open the web interface and go to the ${B}DNS${Z} tab. It lists every record"
+say "  you need to add at your DNS host, and the ${B}Check records${Z} button verifies"
+say "  them live once you have saved them."
+say ""
+if [ "$MODE" = relay ]; then
+  if [ -n "$WEBHOOK_URL" ]; then
+    say "  Relay webhook URL:"
+    say "    ${C}$WEBHOOK_URL${Z}"
+  else
+    say "  ${Y}Relay mode selected but no public URL was given.${Z}"
+    say "  Set one in the web interface (Settings -> Public base URL), then use:"
+    say "    https://YOUR-URL/inbound/$INBOUND_SECRET"
+  fi
+  say ""
+fi
+say "  Mail log: $MAILLOG"
+say "  Service:  systemctl status selfmail"
+say ""
