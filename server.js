@@ -11,6 +11,7 @@ const { Resolver } = require('dns').promises;
 const pubdns = new Resolver({ timeout: 4000, tries: 2 });
 try { pubdns.setServers(['1.1.1.1', '8.8.8.8', '9.9.9.9']); } catch (e) { /* fall back */ }
 const { execFile } = require('child_process');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
@@ -134,9 +135,87 @@ app.get('/inbound/:secret/ping', (req, res) => {
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.join(APP_DIR, 'public')));
 
+// Postfix queries the OpenDKIM milter about a new connection *before* it emits
+// the 220 banner, and waits milter_connect_timeout (default 30s) for an answer.
+// A milter that is listening but not replying therefore looks exactly like a
+// dead server, and nodemailer's own greetingTimeout is also 30s - so the two
+// expire together and the UI reports the useless "Greeting never received".
+// Give up in a few seconds instead, and let the caller fall back to sendmail.
 const transport = nodemailer.createTransport({
   host: '127.0.0.1', port: 25, secure: false, ignoreTLS: true,
+  connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 45000,
 });
+
+// Submitting through the sendmail binary goes postdrop -> pickup -> cleanup and
+// never touches smtpd, so it still works while smtpd is stalled on the milter.
+// postdrop is setgid, so no sudo entry is needed for this.
+function sendmailPath() {
+  const cands = ['/usr/sbin/sendmail', '/usr/lib/sendmail', '/usr/bin/sendmail'];
+  for (const p of cands) {
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch (e) { /* next */ }
+  }
+  return '';
+}
+
+// Only transport-level failures may be retried. A 5xx from Postfix, a rejected
+// recipient or a malformed address is a real answer and must be reported as-is.
+function mtaUnreachable(e) {
+  const code = e && e.code;
+  if (['ECONNECTION', 'ETIMEDOUT', 'ESOCKET', 'ECONNREFUSED', 'EDNS'].indexOf(code) !== -1) return true;
+  return /greeting never received|connection timeout|socket close/i.test((e && e.message) || '');
+}
+
+// Connects to the local MTA and waits for the greeting, so the three failures
+// that are indistinguishable in the UI can be told apart: nothing listening,
+// something listening that is not Postfix, and Postfix accepting the connection
+// but withholding the banner.
+function probeSmtp(timeoutMs) {
+  return new Promise(function (resolve) {
+    const started = Date.now();
+    let done = false, buf = '';
+    const s = net.createConnection({ host: '127.0.0.1', port: 25 });
+    const finish = function (r) {
+      if (done) return;
+      done = true;
+      try { s.destroy(); } catch (e) { /* already gone */ }
+      r.ms = Date.now() - started;
+      resolve(r);
+    };
+    s.setTimeout(timeoutMs || 8000);
+    s.on('data', function (d) {
+      buf += d.toString('latin1');
+      if (buf.indexOf(String.fromCharCode(10)) === -1) return;
+      const line = buf.split(String.fromCharCode(10))[0].trim();
+      const ok = /^220[ -]/.test(line);
+      finish({ ok: ok, banner: line, code: ok ? '' : 'NOTSMTP' });
+    });
+    s.on('timeout', function () {
+      finish({ ok: false, banner: buf.trim(), code: 'NOGREETING' });
+    });
+    s.on('error', function (e) {
+      finish({ ok: false, banner: '', code: e.code || 'ERROR', detail: e.message });
+    });
+  });
+}
+
+function explainProbe(p) {
+  if (p.ok) return '';
+  if (p.code === 'NOGREETING') {
+    return 'Postfix accepted the connection on 127.0.0.1:25 but sent no greeting within ' +
+      Math.round(p.ms / 1000) + 's. smtpd asks the OpenDKIM milter about every connection ' +
+      'before it greets, so a milter that is listening but not answering stalls it here. ' +
+      'Check: systemctl status opendkim - then run sudo ./update.sh, which caps that wait.';
+  }
+  if (p.code === 'ECONNREFUSED') {
+    return 'Nothing is listening on 127.0.0.1:25, so Postfix is not running. ' +
+      'Check: sudo postfix status  and  sudo ss -lntp | grep :25';
+  }
+  if (p.code === 'NOTSMTP') {
+    return 'Port 25 answered with "' + p.banner.slice(0, 120) + '", which is not an SMTP greeting. ' +
+      'Something other than Postfix owns the port. Check: sudo ss -lntp | grep :25';
+  }
+  return 'Could not reach 127.0.0.1:25 (' + (p.code || 'unknown') + '). ' + (p.detail || '');
+}
 
 const readSent = () => {
   try { return JSON.parse(fs.readFileSync(SENT_LOG, 'utf8')); } catch (e) { return []; }
@@ -294,27 +373,58 @@ app.post('/api/send', async (req, res) => {
       .trim();
   }
 
+  const msg = {
+    from: c.fromName ? '"' + c.fromName + '" <' + b.from + '>' : b.from,
+    to: rcpts.join(', '),
+    subject: b.subject,
+    replyTo: b.replyTo || undefined,
+    text: textPart || undefined,
+    html: b.html || undefined,
+    envelope: { from: b.from, to: rcpts },
+    textEncoding: 'quoted-printable',
+  };
+
+  const finish = function (rec) {
+    const all = readSent(); all.unshift(rec);
+    fs.writeFileSync(SENT_LOG, JSON.stringify(all.slice(0, 200), null, 2));
+    res.status(rec.ok ? 200 : 500).json(rec);
+  };
+  const base = { ts: new Date().toISOString(), from: b.from, to: b.to, subject: b.subject };
+
+  let smtpErr;
   try {
-    const info = await transport.sendMail({
-      from: c.fromName ? '"' + c.fromName + '" <' + b.from + '>' : b.from,
-      to: rcpts.join(', '),
-      subject: b.subject,
-      replyTo: b.replyTo || undefined,
-      text: textPart || undefined,
-      html: b.html || undefined,
-      envelope: { from: b.from, to: rcpts },
-      textEncoding: 'quoted-printable',
-    });
-    const rec = { ts: new Date().toISOString(), from: b.from, to: b.to, subject: b.subject, response: info.response, ok: true };
-    const all = readSent(); all.unshift(rec);
-    fs.writeFileSync(SENT_LOG, JSON.stringify(all.slice(0, 200), null, 2));
-    res.json(rec);
+    const info = await transport.sendMail(msg);
+    return finish(Object.assign({}, base, { response: info.response, via: 'smtp', ok: true }));
   } catch (e) {
-    const rec = { ts: new Date().toISOString(), from: b.from, to: b.to, subject: b.subject, error: e.message, ok: false };
-    const all = readSent(); all.unshift(rec);
-    fs.writeFileSync(SENT_LOG, JSON.stringify(all.slice(0, 200), null, 2));
-    res.status(500).json(rec);
+    if (!mtaUnreachable(e)) {
+      return finish(Object.assign({}, base, { error: e.message, via: 'smtp', ok: false }));
+    }
+    smtpErr = e;
+    console.error('send: smtpd unreachable (' + e.message + '), trying sendmail');
   }
+
+  // smtpd did not answer. Hand the message to the sendmail binary instead: it
+  // writes to the maildrop queue, so the mail is accepted and delivered as soon
+  // as the queue drains, rather than being lost to a stalled smtpd.
+  const bin = sendmailPath();
+  if (bin) {
+    try {
+      const alt = nodemailer.createTransport({ sendmail: true, path: bin, newline: 'unix' });
+      const info = await alt.sendMail(msg);
+      console.log('send: queued via ' + bin + ' (smtpd was unreachable)');
+      return finish(Object.assign({}, base, {
+        response: 'queued locally via ' + bin + ' - smtpd did not answer, see Status',
+        via: 'sendmail', messageId: info.messageId, ok: true,
+      }));
+    } catch (e2) {
+      console.error('send: sendmail fallback failed: ' + e2.message);
+    }
+  }
+
+  const probe = await probeSmtp(9000);
+  finish(Object.assign({}, base, {
+    error: smtpErr.message, diagnosis: explainProbe(probe), via: 'smtp', ok: false,
+  }));
 });
 
 app.get('/api/sent', (req, res) => res.json(readSent()));
@@ -481,6 +591,17 @@ app.get('/api/status', async (req, res) => {
     out.postfix = unit;
   }
   out.opendkim = (await sh('systemctl', ['is-active', 'opendkim'])).trim();
+
+  // `postfix status` only says the master is alive. What actually matters for
+  // sending is whether smtpd greets, which is a different question - it is the
+  // milter handshake, not the master, that goes silent.
+  const probe = await probeSmtp(9000);
+  out.smtp = {
+    ok: probe.ok,
+    banner: probe.banner,
+    ms: probe.ms,
+    detail: probe.ok ? '' : explainProbe(probe),
+  };
   res.json(out);
 });
 

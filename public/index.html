@@ -245,7 +245,11 @@ $('#sendBtn').onclick = function () {
     .then(function (r) {
       var m = $('#sendMsg');
       m.className = 'msg ' + (r.ok ? 'ok' : 'err');
-      m.textContent = r.ok ? ('Accepted by Postfix - ' + (r.b.response || '')) : ('Failed: ' + (r.b.error || 'unknown'));
+      if (r.ok) {
+        m.textContent = (r.b.via === 'sendmail' ? 'Queued locally - ' : 'Accepted by Postfix - ') + (r.b.response || '');
+      } else {
+        m.textContent = 'Failed: ' + (r.b.error || 'unknown') + (r.b.diagnosis ? '  ' + r.b.diagnosis : '');
+      }
       btn.disabled = false; btn.textContent = 'Send';
     });
 };
@@ -419,6 +423,9 @@ function loadStatus() {
     $('#svcCard').innerHTML =
       '<div><span class="dot ' + (s.postfix === 'active' ? 'ok' : 'bad') + '"></span> postfix: ' + esc(s.postfix) + '</div>' +
       '<div style="margin-top:6px"><span class="dot ' + (s.opendkim === 'active' ? 'ok' : 'bad') + '"></span> opendkim: ' + esc(s.opendkim) + '</div>' +
+      (s.smtp ? '<div style="margin-top:6px"><span class="dot ' + (s.smtp.ok ? 'ok' : 'bad') + '"></span> smtpd on 127.0.0.1:25: ' +
+        (s.smtp.ok ? esc(s.smtp.banner) + ' (' + s.smtp.ms + 'ms)' : 'no greeting') + '</div>' +
+        (s.smtp.detail ? '<div class="hint" style="margin-top:4px">' + esc(s.smtp.detail) + '</div>' : '') : '') +
       '<div style="margin-top:6px"><span class="dot ' + (s.ipMatchesConfig ? 'ok' : 'warn') + '"></span> public IP ' + esc(s.currentIp) +
       (s.ipMatchesConfig ? ' (matches config)' : ' - config says ' + esc(s.cfg.publicIp) + ', update it or SPF will fail') + '</div>';
     $('#q').textContent = s.queue || '(empty)';
