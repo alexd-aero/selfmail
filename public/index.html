@@ -302,6 +302,15 @@ $('#backToList').onclick = function () {
   $('#inboxCount').style.display = ''; $('#addrCard').style.display = '';
 };
 
+// Messages carry Date headers in whatever timezone the sender used, which
+// makes a correctly ordered list look shuffled. Render every one in the
+// viewer's own timezone instead.
+function fmtDate(m) {
+  var t = m.ts || Date.parse(m.date || '');
+  if (!t || isNaN(t)) return m.date || '';
+  return new Date(t).toLocaleString();
+}
+
 function loadInbox() {
   $('#msgView').style.display = 'none';
   $('#msgList').style.display = ''; $('#refInbox').style.display = '';

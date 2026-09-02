@@ -400,9 +400,14 @@ app.get('/api/inbox', async (req, res) => {
       to: decodeWords(p.h.to || ''),
       subject: decodeWords(p.h.subject || '(no subject)'),
       date: p.h.date || new Date(it.t * 1000).toUTCString(),
+      ts: (function () {
+        const d = Date.parse(p.h.date || '');
+        return isNaN(d) ? it.t * 1000 : d;
+      })(),
       unread: it.f.indexOf('/new/') !== -1,
     });
   }
+  msgs.sort(function (a, b) { return b.ts - a.ts; });
   res.json(msgs);
 });
 
