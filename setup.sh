@@ -399,13 +399,20 @@ postmap /etc/postfix/vmailbox
 printf '@%s\t%s@%s\n' "$MAIL_DOMAIN" "$MAILBOX" "$MAIL_DOMAIN" > /etc/postfix/virtual
 postmap /etc/postfix/virtual
 
+# Do not enable IPv6 in Postfix on a host where it is disabled, or the master
+# fatals on the IPv6 bind and never starts. Match the setting to the host.
+INET_PROTO=all
+if [ ! -f /proc/net/if_inet6 ] || [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = 1 ]; then
+  INET_PROTO=ipv4
+fi
+
 postconf -e \
   "myhostname = $MX_HOST" \
   "smtpd_banner = \$myhostname ESMTP" \
   "mydestination = localhost" \
   "mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128" \
   "inet_interfaces = all" \
-  "inet_protocols = all" \
+  "inet_protocols = $INET_PROTO" \
   "smtp_address_preference = ipv4" \
   "disable_vrfy_command = yes" \
   "smtpd_helo_required = yes" \

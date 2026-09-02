@@ -144,6 +144,15 @@ done
 [ "$CLEARED" = 0 ] && ok "no conflicting mail server running"
 
 # ------------------------------------------------------------ restart -----
+# Repair the IPv6 bind failure that kept older installs' Postfix down: if the
+# host has IPv6 disabled but Postfix is set to use it, the master never binds.
+if [ ! -f /proc/net/if_inet6 ] || [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = 1 ]; then
+  if [ "$(postconf -h inet_protocols 2>/dev/null)" != ipv4 ]; then
+    warn "IPv6 is disabled here but Postfix was set to use it - switching to ipv4-only"
+    postconf -e "inet_protocols = ipv4"
+  fi
+fi
+
 step "Restarting services"
 systemctl daemon-reload 2>/dev/null || true
 UNITS="postfix opendkim selfmail"

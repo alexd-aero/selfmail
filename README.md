@@ -71,6 +71,7 @@ Everything it writes lives in `/etc/selfmail`, `/opt/selfmail` and `/var/mail/vh
 sudo ./run.sh      # start everything, print the local and public URLs
 sudo ./kill.sh     # stop selfmail and the tunnel (add --all to stop postfix too)
 sudo ./update.sh   # pull latest, install over the running copy, restart
+sudo ./doctor.sh   # diagnose and repair a Postfix that will not start
 ```
 
 `update.sh` pulls, copies the new code into `/opt/selfmail`, refreshes
