@@ -61,6 +61,45 @@ postfix_really_running() {
   postfix status >/dev/null 2>&1
 }
 
+# `postfix status` only proves the master is alive. Sending needs smtpd to
+# actually greet, which fails separately - and silently. Prints the banner;
+# returns 0 greeting, 1 nothing listening, 2 connected but no greeting.
+smtp_probe() {
+  local out rc
+  out="$(timeout 8 bash -c '
+    exec 3<>/dev/tcp/127.0.0.1/25 2>/dev/null || exit 1
+    IFS= read -r -t 6 l <&3 || exit 2
+    printf "%s" "$l"' 2>/dev/null)"
+  rc=$?
+  printf '%s' "${out//$'\r'/}"
+  return $rc
+}
+
+# Shared by setup.sh and update.sh so both installs and upgrades are checked
+# the same way. Returns non-zero when the send path would not work.
+report_smtp() {
+  local banner rc
+  banner="$(smtp_probe)"; rc=$?
+  case "$rc" in
+    0)
+      case "$banner" in
+        220*) ok "smtpd greets on 127.0.0.1:25 - $banner"; return 0 ;;
+        *)    warn "port 25 answered with something that is not SMTP: $banner" ;;
+      esac
+      ;;
+    1) warn "nothing is listening on 127.0.0.1:25 - postfix is not running" ;;
+    *)
+      warn "port 25 accepted the connection but sent no greeting"
+      warn "that is exactly what makes the web UI report \"Greeting never received\""
+      warn "smtpd consults the OpenDKIM milter before it greets - check:"
+      warn "  systemctl status opendkim ; journalctl -u opendkim -n 30"
+      ;;
+  esac
+  echo "  Holding port 25 right now:"
+  ss -lntp 2>/dev/null | awk 'NR==1 || $4 ~ /:25$/' | sed 's/^/    /'
+  return 1
+}
+
 # ------------------------------------------------------------ platform ----
 step "Checking platform"
 PM=""
@@ -392,6 +431,18 @@ postconf -e \
   "smtpd_milters = local:/opendkim/opendkim.sock" \
   "non_smtpd_milters = local:/opendkim/opendkim.sock"
 
+# Postfix asks the milter about a new connection *before* it sends the 220
+# banner, and milter_connect_timeout defaults to 30s. An OpenDKIM that is
+# listening but not answering therefore holds the greeting for half a minute,
+# which every SMTP client - the web UI included - reports as the unhelpful
+# "Greeting never received". milter_default_action does not cover this: it
+# applies to a *refused* milter connection, not a silent one. Cap the wait, so
+# a sick milter costs a signature rather than the entire send path.
+postconf -e \
+  "milter_connect_timeout = 5s" \
+  "milter_command_timeout = 10s" \
+  "milter_content_timeout = 30s"
+
 # Sending over IPv6 without a PTR record gets rejected by major providers,
 # so pin the outbound client to IPv4 while still listening on both.
 postconf -P 'smtp/unix/inet_protocols=ipv4' 2>/dev/null || true
@@ -518,6 +569,18 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now opendkim >/dev/null 2>&1 || true
 systemctl restart opendkim || true
+
+# Postfix hands every connection to this socket before greeting, so confirm it
+# exists before starting Postfix rather than discovering it on the first send.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S /var/spool/postfix/opendkim/opendkim.sock ] && break
+  sleep 1
+done
+if [ ! -S /var/spool/postfix/opendkim/opendkim.sock ]; then
+  warn "OpenDKIM's milter socket never appeared - mail will send but go unsigned"
+  warn "check: journalctl -u opendkim -n 30"
+fi
+
 clear_port25
 systemctl enable --now postfix >/dev/null 2>&1 || true
 systemctl restart postfix || true
@@ -543,6 +606,7 @@ for s in $SERVICES; do
     if postfix_really_running; then ok "postfix running"; else warn "postfix is NOT running - something else owns port 25 (see above)"; fi
   elif [ "$(systemctl is-active "$s")" = active ]; then ok "$s running"; else warn "$s is NOT running - check: journalctl -u $s -n 40"; fi
 done
+report_smtp || true
 
 # ---------------------------------------------------------------- finish --
 IP_SHOW="$(hostname -I 2>/dev/null | awk '{print $1}')"

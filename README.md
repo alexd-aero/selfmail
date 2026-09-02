@@ -74,9 +74,11 @@ sudo ./update.sh   # pull latest, install over the running copy, restart
 ```
 
 `update.sh` pulls, copies the new code into `/opt/selfmail`, refreshes
-dependencies, clears anything squatting on port 25 and restarts everything.
-Your config, DKIM key, mailboxes and tunnel are untouched. It removes itself
-when it finishes; `git checkout -- update.sh` brings it back.
+dependencies, re-applies the Postfix settings this app owns, clears anything
+squatting on port 25, restarts everything and then verifies that `smtpd`
+actually greets on `127.0.0.1:25` — the check that tells you sending works,
+which `systemctl is-active` does not. Your config, DKIM key, mailboxes and
+tunnel are untouched, and it is safe to re-run at any time to repair an install.
 
 ## DNS
 
@@ -161,6 +163,16 @@ journalctl -u postfix -n 30          # look for "Address already in use"
 `run.sh` stops and disables the usual culprits (exim4, sendmail, opensmtpd, nullmailer) automatically.
 
 **DNS checks look wrong just after adding records** — the checker queries 1.1.1.1/8.8.8.8/9.9.9.9 directly rather than the system resolver, precisely because a local stub caches NXDOMAIN for the zone's negative TTL and would keep reporting a record missing long after it exists. If a record still reads missing, compare the "Currently resolves to" line against the expected value.
+
+**"Greeting never received" when you press Send** — Postfix accepted the connection but never sent its `220` banner. `smtpd` asks the OpenDKIM milter about every new connection *before* it greets, and waits `milter_connect_timeout` for the answer. That default is 30s, which is also the default patience of most SMTP clients, so an OpenDKIM that is listening but not answering makes every send fail with this message. `milter_default_action = accept` does **not** cover it — that applies to a *refused* milter connection, not a silent one.
+
+```bash
+sudo ./update.sh                     # caps the milter handshake at 5s and verifies the fix
+systemctl status opendkim            # the usual culprit
+journalctl -u opendkim -n 30
+```
+
+With the cap in place a sick milter costs you a DKIM signature rather than the whole send path, and the app falls back to submitting through `sendmail` (postdrop → pickup → cleanup, which never touches `smtpd`) so the message is still queued. The **Status** tab shows the live banner, so you can see this before you try to send.
 
 **Mail sends but never arrives** — check the queue with `mailq`. A `status=sent` line in the log means the receiving server accepted it; where it filed it is a separate question.
 
