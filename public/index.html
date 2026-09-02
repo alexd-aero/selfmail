@@ -37,6 +37,32 @@ td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertic
 th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
 .val{background:#0b0e13;border:1px solid var(--line);border-radius:6px;padding:7px 9px;margin-top:4px}
 .copy{background:none;border:1px solid var(--line);color:var(--dim);border-radius:5px;font-size:11px;padding:2px 7px;cursor:pointer;margin-left:6px}
+
+/* --- inbox rows --------------------------------------------------- */
+.mrow{display:grid;grid-template-columns:10px minmax(110px,190px) 1fr auto 28px;gap:14px;align-items:center;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 16px;margin-bottom:8px;
+  cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.mrow:hover{background:#1b2331;border-color:#3a4457}
+.mrow.unread{background:#131c29;border-color:#2e3a4e}
+.mrow.unread .mfrom,.mrow.unread .msubj{font-weight:600;color:var(--fg)}
+.mdot{width:8px;height:8px;border-radius:50%;background:transparent}
+.mrow.unread .mdot{background:var(--acc)}
+.mfrom,.msubj{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.mfrom{color:var(--dim)}
+.msubj{color:var(--fg)}
+.msnip{color:var(--dim);font-weight:400}
+.mdate{font-size:12px;color:var(--dim);white-space:nowrap}
+.mdel{background:none;border:0;color:var(--dim);cursor:pointer;padding:5px 7px;border-radius:7px;
+  opacity:0;font-size:13px;line-height:1;transition:opacity .12s,background .12s,color .12s}
+.mrow:hover .mdel,.mrow:focus-within .mdel{opacity:1}
+.mdel:hover{background:#3a1f22;color:var(--bad)}
+@media(max-width:700px){
+  .mrow{grid-template-columns:10px 1fr auto 28px;row-gap:4px}
+  .mfrom{grid-column:2/4;order:2}
+  .msubj{grid-column:2/4;order:1}
+  .msnip{display:none}
+  .mdel{opacity:1}
+}
 </style></head><body>
 
 <header>
@@ -305,10 +331,38 @@ $('#backToList').onclick = function () {
 // Messages carry Date headers in whatever timezone the sender used, which
 // makes a correctly ordered list look shuffled. Render every one in the
 // viewer's own timezone instead.
+// "Alex <alex@example.com>" -> "Alex"; bare addresses keep the local part.
+function senderName(from) {
+  var s = String(from || '').trim();
+  var m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>/.exec(s);
+  if (m && m[1].trim()) return m[1].trim();
+  if (m) return m[2].split('@')[0];
+  return s.split('@')[0] || s;
+}
+
+function deleteMsg(id, row) {
+  if (!confirm('Delete this message? This cannot be undone.')) return;
+  if (row) { row.style.opacity = '0.4'; row.style.pointerEvents = 'none'; }
+  j('/api/inbox/delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: id })
+  }).then(function (r) {
+    if (r.ok) { if (row && row.parentNode) row.parentNode.removeChild(row); loadInbox(); }
+    else { alert('Delete failed: ' + ((r.b && r.b.error) || 'unknown')); loadInbox(); }
+  });
+}
+
 function fmtDate(m) {
   var t = m.ts || Date.parse(m.date || '');
   if (!t || isNaN(t)) return m.date || '';
-  return new Date(t).toLocaleString();
+  var d = new Date(t), now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function loadInbox() {
@@ -323,15 +377,23 @@ function loadInbox() {
     $('#inboxCount').textContent = msgs.length + ' message' + (msgs.length === 1 ? '' : 's');
     if (!msgs.length) { $('#msgList').innerHTML = '<div class="card hint">Inbox is empty.</div>'; return; }
     $('#msgList').innerHTML = msgs.map(function (m) {
-      return '<div class="card" style="cursor:pointer" data-id="' + esc(m.id) + '">' +
-        '<div style="display:flex;gap:10px;align-items:baseline">' +
-        (m.unread ? '<span class="dot ok"></span>' : '') +
-        '<strong style="font-size:13px">' + esc(m.subject) + '</strong>' +
-        '<span class="hint" style="margin-left:auto;white-space:nowrap">' + esc(m.date) + '</span></div>' +
-        '<div class="hint" style="margin-top:4px">from ' + esc(m.from) + '</div></div>';
+      return '<div class="mrow' + (m.unread ? ' unread' : '') + '" data-id="' + esc(m.id) + '">' +
+        '<span class="mdot"></span>' +
+        '<span class="mfrom">' + esc(senderName(m.from)) + '</span>' +
+        '<span class="msubj">' + esc(m.subject) +
+          (m.snippet ? ' <span class="msnip">&mdash; ' + esc(m.snippet) + '</span>' : '') + '</span>' +
+        '<span class="mdate">' + esc(fmtDate(m)) + '</span>' +
+        '<button class="mdel" data-del="' + esc(m.id) + '" title="Delete">&#10005;</button>' +
+      '</div>';
     }).join('');
-    Array.prototype.forEach.call($('#msgList').querySelectorAll('[data-id]'), function (el) {
+    Array.prototype.forEach.call($('#msgList').querySelectorAll('.mrow'), function (el) {
       el.onclick = function () { openMsg(el.dataset.id); };
+    });
+    Array.prototype.forEach.call($('#msgList').querySelectorAll('.mdel'), function (b) {
+      b.onclick = function (ev) {
+        ev.stopPropagation();               // do not open the message
+        deleteMsg(b.dataset.del, b.parentNode);
+      };
     });
   });
 }

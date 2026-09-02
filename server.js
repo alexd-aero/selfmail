@@ -394,6 +394,10 @@ app.get('/api/inbox', async (req, res) => {
   for (const it of files) {
     const raw = await sudoRead(it.f);
     const p = parseHeaders(raw.slice(0, 8000));
+    let snippet = '';
+    try {
+      snippet = textPartOf(raw).replace(/\s+/g, ' ').trim().slice(0, 140);
+    } catch (e) { /* unparseable body */ }
     msgs.push({
       id: Buffer.from(it.f).toString('base64'),
       from: decodeWords(p.h.from || ''),
@@ -405,6 +409,7 @@ app.get('/api/inbox', async (req, res) => {
         return isNaN(d) ? it.t * 1000 : d;
       })(),
       unread: it.f.indexOf('/new/') !== -1,
+      snippet: snippet,
     });
   }
   msgs.sort(function (a, b) { return b.ts - a.ts; });
@@ -426,6 +431,22 @@ app.get('/api/inbox/msg', async (req, res) => {
     dkim: p.h['dkim-signature'] ? 'present' : 'none',
     body: textPartOf(raw).slice(0, 200000),
   });
+});
+
+// --- delete ------------------------------------------------------------
+// The id is a base64 path, so validate it stays inside the mail root and
+// contains no traversal before handing it to rm.
+app.post('/api/inbox/delete', async (req, res) => {
+  let f;
+  try { f = Buffer.from(String((req.body && req.body.id) || ''), 'base64').toString('utf8'); }
+  catch (e) { return res.status(400).json({ error: 'bad id' }); }
+  if (!f || f.indexOf(MAILROOT + '/') !== 0 || f.indexOf('..') !== -1 || f.indexOf(String.fromCharCode(0)) !== -1) {
+    return res.status(400).json({ error: 'bad path' });
+  }
+  const out = await sh('sudo', ['rm', '-f', '--', f]);
+  const gone = await sh('sudo', ['test', '-e', f]);
+  console.log('deleted ' + f);
+  res.json({ ok: true, deleted: f.split('/').pop(), detail: (out || '').trim() });
 });
 
 app.get('/api/addresses', async (req, res) => {
