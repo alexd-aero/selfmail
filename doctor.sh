@@ -28,14 +28,44 @@ for m in exim4 exim sendmail nullmailer opensmtpd citadel; do
     systemctl disable "$m" >/dev/null 2>&1 || true
   fi
 done
+
+# A Docker container that publishes port 25 (another mail server tried earlier)
+# holds it through docker-proxy, which Postfix cannot bind past. Find and stop
+# those containers, and turn off their restart policy so they do not come back.
+OWNER="$(ss -lntp 2>/dev/null | awk '$4 ~ /:25$/' | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
+if [ "$OWNER" = docker-proxy ] && command -v docker >/dev/null 2>&1; then
+  CIDS="$(docker ps --format '{{.ID}}\t{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E ':25->' | cut -f1,2)"
+  if [ -n "$CIDS" ]; then
+    warn "a Docker container is publishing port 25 - stopping it so Postfix can bind"
+    printf '%s\n' "$CIDS" | while IFS="$(printf '\t')" read -r cid cname; do
+      [ -z "$cid" ] && continue
+      warn "  stopping container $cname ($cid)"
+      docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      docker stop "$cid" >/dev/null 2>&1 || true
+    done
+    sleep 2
+    ok "container(s) on port 25 stopped (they will not restart on their own)"
+  else
+    warn "docker-proxy holds port 25 but no matching container was found - is another daemon publishing it?"
+  fi
+fi
+
 # Kill a stale postfix master that survived a crash and is squatting the port.
 if ! really_running && ss -lntp 2>/dev/null | grep -q ':25 .*master'; then
   warn "a dead postfix master is still holding port 25 - clearing it"
   fuser -k 25/tcp >/dev/null 2>&1 || true
   sleep 2
 fi
+
 OCC="$(ss -lntp 2>/dev/null | awk '$4 ~ /:25$/ {print}')"
-[ -z "$OCC" ] && ok "port 25 is free" || warn "still on port 25: $OCC"
+if [ -z "$OCC" ]; then
+  ok "port 25 is free"
+else
+  bad "port 25 is still held:"
+  printf '%s\n' "$OCC" | sed 's/^/      /'
+  STILL="$(printf '%s' "$OCC" | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
+  [ -n "$STILL" ] && warn "held by: $STILL - stop that before Postfix can start"
+fi
 
 step "2. Checking IPv6 vs Postfix inet_protocols"
 # This is the big one. setup.sh set inet_protocols=all; on a host where IPv6
