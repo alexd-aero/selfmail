@@ -40,6 +40,23 @@ die()  { printf '\n%sError:%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
 # and the failure is quiet: on Debian/Ubuntu `systemctl is-active postfix`
 # still reports "active" because postfix.service is only a wrapper. The other
 # server then answers mail with its own policy, typically "Relay access denied".
+# A Docker container publishing port 25 (another mail server tried earlier)
+# blocks Postfix from binding. Stop it and turn off its restart policy.
+clear_docker_25() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local owner
+  owner="$(ss -lntp 2>/dev/null | awk '$4 ~ /:25$/' | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
+  [ "$owner" = docker-proxy ] || return 0
+  docker ps --format '{{.ID}}\t{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E ':25->' | cut -f1,2 \
+  | while IFS="$(printf '\t')" read -r cid cname; do
+      [ -z "$cid" ] && continue
+      warn "Docker container $cname publishes port 25 - stopping it"
+      docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      docker stop "$cid" >/dev/null 2>&1 || true
+    done
+  sleep 2
+}
+
 clear_port25() {
   local m stopped=0
   for m in exim4 exim sendmail nullmailer opensmtpd citadel; do
@@ -201,6 +218,7 @@ case "$CONFIRM" in y|Y|yes|YES) : ;; *) die "aborted" ;; esac
 # ------------------------------------------------------------- packages ---
 step "Installing packages"
 clear_port25
+clear_docker_25
 export DEBIAN_FRONTEND=noninteractive
 
 # Unattended upgrades or a concurrent install will hold the dpkg lock and make
@@ -541,6 +559,14 @@ SELFMAIL_MAILROOT=$MAILROOT
 ENV
 chown root:"$APP_USER" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
+
+# Seed the web login. The published default adminpass/adminpass26! works until
+# changed with ./update.sh; users may add their own logins there too.
+DEF_HASH="$(printf '%s' 'adminpass26!' | sha256sum | awk '{print $1}')"
+printf '{\n  "adminpass": "%s"\n}\n' "$DEF_HASH" > "$CFG_DIR/users.json"
+chown root:"$APP_USER" "$CFG_DIR/users.json" 2>/dev/null || true
+chmod 640 "$CFG_DIR/users.json"
+
 
 # The app reads maildirs owned by vmail and queries postfix, so it needs a
 # few specific commands as root - listed explicitly rather than blanket sudo.

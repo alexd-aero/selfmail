@@ -48,6 +48,15 @@ if [ "$FAILED" = 1 ]; then
   echo "Stop that service, then re-run this script."
 fi
 
+
+# If Postfix still is not up, run the doctor automatically - it clears Docker
+# or MTA squatters on port 25, fixes the IPv6 bind issue, and restarts.
+if ! postfix status >/dev/null 2>&1; then
+  echo
+  echo "Postfix is not up - running doctor.sh to repair it..."
+  "$(dirname "$0")/doctor.sh" || true
+fi
+
 PORT="$(awk -F= '/^SELFMAIL_PORT=/{print $2}' /etc/selfmail/env 2>/dev/null)"
 echo
 echo "web UI: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT:-8088}"

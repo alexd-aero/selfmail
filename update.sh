@@ -1,200 +1,102 @@
 #!/usr/bin/env bash
 #
-# selfmail updater
+# selfmail login helper - manage who can sign in to the web interface
 #
-#   sudo ./update.sh
+#   sudo ./update.sh            add or change a login, interactively
+#   sudo ./update.sh <user> <pass>   set one non-interactively
+#   sudo ./update.sh --list     show configured usernames
+#   sudo ./update.sh --remove <user>
 #
-# Pulls the latest code, installs it over the running copy, re-applies the
-# Postfix settings that ship with the app, clears anything squatting on port 25,
-# restarts everything and verifies the send path really works.
-# Your configuration, DKIM key, mailboxes and tunnel are left alone.
+# Credentials live in /etc/selfmail/users.json as username -> sha256(password).
+# The built-in default login below also works until you disable it.
 #
 set -u
+[ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./update.sh"; exit 1; }
 
-APP_DIR="/opt/selfmail"
 CFG_DIR="/etc/selfmail"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USERS_FILE="$CFG_DIR/users.json"
+ENV_FILE="$CFG_DIR/env"
 
-if [ -t 1 ]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; C=$'\e[36m'; Z=$'\e[0m'
-else B=""; G=""; Y=""; R=""; C=""; Z=""; fi
-step() { printf '\n%s==>%s %s%s%s\n' "$C" "$Z" "$B" "$*" "$Z"; }
+if [ -t 1 ]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; Z=$'\e[0m'
+else B=""; G=""; Y=""; C=""; Z=""; fi
 ok()   { printf '  %s+%s %s\n' "$G" "$Z" "$*"; }
 warn() { printf '  %s!%s %s\n' "$Y" "$Z" "$*"; }
-die()  { printf '\n%sError:%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
 
-# `postfix status` only proves the master is alive. Sending needs smtpd to
-# actually greet, which fails separately - and silently. Prints the banner;
-# returns 0 greeting, 1 nothing listening, 2 connected but no greeting.
-smtp_probe() {
-  local out rc
-  out="$(timeout 8 bash -c '
-    exec 3<>/dev/tcp/127.0.0.1/25 2>/dev/null || exit 1
-    IFS= read -r -t 6 l <&3 || exit 2
-    printf "%s" "$l"' 2>/dev/null)"
-  rc=$?
-  printf '%s' "${out//$'\r'/}"
-  return $rc
+sha256() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+
+mkdir -p "$CFG_DIR"
+[ -f "$USERS_FILE" ] || echo '{}' > "$USERS_FILE"
+
+# Minimal JSON get/set/delete without depending on jq being installed.
+users_set() { # user hash
+  python3 - "$USERS_FILE" "$1" "$2" <<'PY'
+import json,sys
+f,u,h=sys.argv[1],sys.argv[2],sys.argv[3]
+try: d=json.load(open(f))
+except Exception: d={}
+d[u]=h
+json.dump(d,open(f,'w'),indent=2)
+PY
+}
+users_del() {
+  python3 - "$USERS_FILE" "$1" <<'PY'
+import json,sys
+f,u=sys.argv[1],sys.argv[2]
+try: d=json.load(open(f))
+except Exception: d={}
+d.pop(u,None)
+json.dump(d,open(f,'w'),indent=2)
+PY
+}
+users_list() {
+  python3 - "$USERS_FILE" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+for k in d: print("  -", k)
+PY
 }
 
-report_smtp() {
-  local banner rc
-  banner="$(smtp_probe)"; rc=$?
-  case "$rc" in
-    0)
-      case "$banner" in
-        220*) ok "smtpd greets on 127.0.0.1:25 - $banner"; return 0 ;;
-        *)    warn "port 25 answered with something that is not SMTP: $banner" ;;
-      esac
-      ;;
-    1) warn "nothing is listening on 127.0.0.1:25 - postfix is not running" ;;
-    *)
-      warn "port 25 accepted the connection but sent no greeting"
-      warn "that is exactly what makes the web UI report \"Greeting never received\""
-      warn "smtpd consults the OpenDKIM milter before it greets - check:"
-      warn "  systemctl status opendkim ; journalctl -u opendkim -n 30"
-      ;;
-  esac
-  echo "  Holding port 25 right now:"
-  ss -lntp 2>/dev/null | awk 'NR==1 || $4 ~ /:25$/' | sed 's/^/    /'
-  return 1
-}
-
-[ "$(id -u)" -eq 0 ] || die "run with sudo:  sudo ./update.sh"
-[ -d "$APP_DIR" ] || die "$APP_DIR not found - run setup.sh first, this only updates an existing install"
-
-# ------------------------------------------------------------ git pull ----
-step "Pulling latest code"
-if [ -d "$SRC_DIR/.git" ]; then
-  # The repo is usually owned by a normal user; running git as root in it
-  # trips "detected dubious ownership", so pull as the owner when we can.
-  REPO_OWNER="$(stat -c '%U' "$SRC_DIR" 2>/dev/null || echo root)"
-  if [ "$REPO_OWNER" != root ] && id "$REPO_OWNER" >/dev/null 2>&1; then
-    sudo -u "$REPO_OWNER" git -C "$SRC_DIR" pull --ff-only 2>&1 | sed 's/^/  /' || \
-      warn "pull failed - continuing with the files already on disk"
-  else
-    git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
-    git -C "$SRC_DIR" pull --ff-only 2>&1 | sed 's/^/  /' || \
-      warn "pull failed - continuing with the files already on disk"
-  fi
-  ok "now at $(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-else
-  warn "not a git checkout - installing the files in $SRC_DIR as-is"
-fi
-
-# --------------------------------------------------------- install code ---
-step "Installing application files"
-[ -f "$SRC_DIR/server.js" ] || die "server.js missing from $SRC_DIR"
-cp "$SRC_DIR/server.js" "$APP_DIR/server.js"
-cp "$SRC_DIR/package.json" "$APP_DIR/package.json" 2>/dev/null || true
-mkdir -p "$APP_DIR/public"
-cp -r "$SRC_DIR/public/." "$APP_DIR/public/" 2>/dev/null || true
-
-APP_USER="selfmail"
-id "$APP_USER" >/dev/null 2>&1 || APP_USER=root
-chown -R "$APP_USER":"$APP_USER" "$APP_DIR" 2>/dev/null || true
-ok "code copied to $APP_DIR"
-
-if [ -f "$APP_DIR/package.json" ]; then
-  ( cd "$APP_DIR" && npm install --omit=dev --silent --no-audit --no-fund >/dev/null 2>&1 ) && \
-    ok "dependencies up to date" || warn "npm install had problems - the app may still run"
-  chown -R "$APP_USER":"$APP_USER" "$APP_DIR" 2>/dev/null || true
-fi
-
-# --------------------------------------------------- postfix / opendkim ---
-# update.sh used to copy only application files, so a Postfix setting shipped
-# with a fix never reached anyone who had already installed. Re-apply the ones
-# this app owns; they are idempotent and leave the rest of main.cf alone.
-step "Re-applying mail settings"
-if command -v postconf >/dev/null 2>&1; then
-  # smtpd asks the milter about a connection *before* it sends the 220 banner,
-  # and milter_connect_timeout defaults to 30s. An OpenDKIM that is listening
-  # but not answering therefore holds the greeting for half a minute, which
-  # clients report as "Greeting never received". milter_default_action does not
-  # help - it covers a refused milter connection, not a silent one.
-  postconf -e \
-    "milter_connect_timeout = 5s" \
-    "milter_command_timeout = 10s" \
-    "milter_content_timeout = 30s" 2>/dev/null \
-    && ok "milter handshake capped at 5s (was Postfix's 30s default)" \
-    || warn "could not update main.cf - is postfix installed?"
-else
-  warn "postconf not found - skipping mail settings"
-fi
-
-# The milter socket must exist before Postfix starts handing connections to it.
-if [ -S /var/spool/postfix/opendkim/opendkim.sock ]; then
-  ok "opendkim milter socket present"
-else
-  warn "opendkim milter socket missing - mail will send but go unsigned"
-  warn "check: journalctl -u opendkim -n 30"
-fi
-
-# ------------------------------------------------------------ port 25 -----
-step "Checking port 25"
-CLEARED=0
-for m in exim4 exim sendmail nullmailer opensmtpd citadel; do
-  if systemctl is-active --quiet "$m" 2>/dev/null; then
-    warn "$m owns port 25 - stopping and disabling it"
-    systemctl stop "$m" 2>/dev/null || true
-    systemctl disable "$m" >/dev/null 2>&1 || true
-    CLEARED=1
-  fi
-done
-[ "$CLEARED" = 1 ] && sleep 2
-[ "$CLEARED" = 0 ] && ok "no conflicting mail server running"
-
-# ------------------------------------------------------------ restart -----
-# Repair the IPv6 bind failure that kept older installs' Postfix down: if the
-# host has IPv6 disabled but Postfix is set to use it, the master never binds.
-if [ ! -f /proc/net/if_inet6 ] || [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = 1 ]; then
-  if [ "$(postconf -h inet_protocols 2>/dev/null)" != ipv4 ]; then
-    warn "IPv6 is disabled here but Postfix was set to use it - switching to ipv4-only"
-    postconf -e "inet_protocols = ipv4"
-  fi
-fi
-
-step "Restarting services"
-systemctl daemon-reload 2>/dev/null || true
-UNITS="postfix opendkim selfmail"
-[ -f /etc/systemd/system/selfmail-tunnel.service ] && UNITS="$UNITS selfmail-tunnel"
-for u in $UNITS; do systemctl restart "$u" 2>/dev/null || true; done
-[ -f /etc/systemd/system/selfmail-health.timer ] && systemctl start selfmail-health.timer 2>/dev/null || true
-sleep 3
-
-FAILED=0
-for u in $UNITS; do
-  if [ "$u" = postfix ]; then
-    # postfix.service is a wrapper on Debian/Ubuntu and reports active even
-    # when the master failed to bind, so ask postfix itself.
-    if postfix status >/dev/null 2>&1; then ok "postfix running"
-    else warn "postfix NOT running"; FAILED=1; fi
-  elif [ "$(systemctl is-active "$u")" = active ]; then ok "$u running"
-  else warn "$u NOT running - journalctl -u $u -n 40"; FAILED=1; fi
-done
-
-if [ "$FAILED" = 1 ]; then
+finish() {
+  chown root:selfmail "$USERS_FILE" 2>/dev/null || true
+  chmod 640 "$USERS_FILE"
+  systemctl restart selfmail 2>/dev/null || true
   echo
-  echo "  Holding port 25 right now:"
-  ss -lntp 2>/dev/null | awk 'NR==1 || $4 ~ /:25$/' | sed 's/^/    /'
+  ok "Saved. The web interface will accept the new login immediately."
+  PORT="$(awk -F= '/^SELFMAIL_PORT=/{print $2}' "$ENV_FILE" 2>/dev/null)"
+  HOST_PUB="$(awk '/hostname:/ {print $3; exit}' /etc/cloudflared/config.yml 2>/dev/null)"
+  echo "  web UI: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT:-8088}"
+  [ -n "$HOST_PUB" ] && echo "  public: https://$HOST_PUB"
+}
+
+case "${1:-}" in
+  --list)
+    echo "${B}Configured logins:${Z}"; users_list
+    echo "  (the built-in default 'adminpass' also works unless disabled)"
+    exit 0 ;;
+  --remove)
+    [ -n "${2:-}" ] || { echo "usage: sudo ./update.sh --remove <user>"; exit 1; }
+    users_del "$2"; ok "removed $2"; finish; exit 0 ;;
+  --disable-default)
+    # persist the kill switch for the published default credential
+    grep -q '^SELFMAIL_DISABLE_DEFAULT=' "$ENV_FILE" 2>/dev/null \
+      && sed -i 's/^SELFMAIL_DISABLE_DEFAULT=.*/SELFMAIL_DISABLE_DEFAULT=1/' "$ENV_FILE" \
+      || echo 'SELFMAIL_DISABLE_DEFAULT=1' >> "$ENV_FILE"
+    ok "built-in default login disabled"; finish; exit 0 ;;
+esac
+
+U="${1:-}"; P="${2:-}"
+if [ -z "$U" ]; then
+  printf '  %sWeb login username:%s ' "$B" "$Z"
+  if [ -e /dev/tty ]; then read -r U </dev/tty; else read -r U; fi
 fi
+if [ -z "$P" ]; then
+  printf '  Password: '
+  if [ -e /dev/tty ]; then read -r -s P </dev/tty; else read -r P; fi
+  printf '\n'
+fi
+[ -n "$U" ] && [ -n "$P" ] || { echo "username and password are both required"; exit 1; }
 
-# The units can all be "active" while sending is still broken, so check the one
-# thing that actually matters: does smtpd greet?
-step "Verifying the send path"
-report_smtp || FAILED=1
-
-# ------------------------------------------------------------- report -----
-PORT="$(awk -F= '/^SELFMAIL_PORT=/{print $2}' "$CFG_DIR/env" 2>/dev/null)"
-HOST_PUB="$(awk '/hostname:/ {print $3; exit}' /etc/cloudflared/config.yml 2>/dev/null)"
-LAN="$(hostname -I 2>/dev/null | awk '{print $1}')"
-
-step "Done"
-echo "  web UI:  http://${LAN:-localhost}:${PORT:-8088}"
-[ -n "$HOST_PUB" ] && echo "  public:  https://$HOST_PUB"
-echo
-echo "  Open the DNS tab and press Check records to re-verify."
-
-# This script used to delete itself here. It no longer does: an updater that
-# removes itself cannot deliver the next fix, and re-running it is the
-# documented way to repair an install.
-exit 0
+users_set "$U" "$(sha256 "$P")"
+ok "login '$U' set"
+finish

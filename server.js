@@ -14,6 +14,7 @@ const { execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const PORT = parseInt(process.env.SELFMAIL_PORT || '8088', 10);
 const CFG_FILE = process.env.SELFMAIL_CONFIG || '/etc/selfmail/config.json';
@@ -51,6 +52,40 @@ function loadCfg() {
 function saveCfg(c) {
   fs.mkdirSync(path.dirname(CFG_FILE), { recursive: true });
   fs.writeFileSync(CFG_FILE, JSON.stringify(c, null, 2));
+}
+
+// --- authentication ---------------------------------------------------
+// Credentials come from three places, any of which is accepted:
+//   1. /etc/selfmail/users.json  { "<user>": "<sha256(password)>" }  (login.sh)
+//   2. the SELFMAIL_USER / SELFMAIL_PASS environment pair
+//   3. a built-in default, unless SELFMAIL_DISABLE_DEFAULT=1
+// The built-in default is a published, well-known credential - change it or
+// disable it before exposing the UI to anyone you do not trust.
+const USERS_FILE = process.env.SELFMAIL_USERS || '/etc/selfmail/users.json';
+const DEFAULT_USER = 'adminpass';
+const DEFAULT_PASS = 'adminpass26!';
+
+function sha256(x) { return crypto.createHash('sha256').update(String(x)).digest('hex'); }
+
+function loadUsers() {
+  try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')) || {}; }
+  catch (e) { return {}; }
+}
+
+// constant-time compare so a wrong password cannot be timed
+function eq(a, b) {
+  const ab = Buffer.from(String(a)); const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) return false;
+  try { return crypto.timingSafeEqual(ab, bb); } catch (e) { return false; }
+}
+
+function checkAuth(user, pass) {
+  if (!user) return false;
+  const users = loadUsers();
+  if (Object.prototype.hasOwnProperty.call(users, user) && eq(users[user], sha256(pass))) return true;
+  if (USER && PASS && user === USER && eq(pass, PASS)) return true;
+  if (process.env.SELFMAIL_DISABLE_DEFAULT !== '1' && user === DEFAULT_USER && eq(pass, DEFAULT_PASS)) return true;
+  return false;
 }
 
 const app = express();
@@ -133,6 +168,17 @@ app.get('/inbound/:secret/ping', (req, res) => {
 // Everything below requires auth.
 // ---------------------------------------------------------------------
 app.use(express.json({ limit: '25mb' }));
+
+app.use(function (req, res, next) {
+  const parts = (req.headers.authorization || '').split(' ');
+  if (parts[0] === 'Basic' && parts[1]) {
+    const dec = Buffer.from(parts[1], 'base64').toString();
+    const i = dec.indexOf(':');
+    if (i !== -1 && checkAuth(dec.slice(0, i), dec.slice(i + 1))) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="selfmail"').status(401).send('authentication required');
+});
+
 app.use(express.static(path.join(APP_DIR, 'public')));
 
 // Postfix queries the OpenDKIM milter about a new connection *before* it emits
@@ -381,6 +427,8 @@ app.post('/api/send', async (req, res) => {
     text: textPart || undefined,
     html: b.html || undefined,
     envelope: { from: b.from, to: rcpts },
+    inReplyTo: b.inReplyTo || undefined,
+    references: b.references || b.inReplyTo || undefined,
     textEncoding: 'quoted-printable',
   };
 
@@ -483,6 +531,32 @@ function textPartOf(raw) {
   return body;
 }
 
+// Extract a text/html part if the message has one, so the reader can render
+// mail the way the sender intended rather than as flattened plain text.
+function htmlPartOf(raw) {
+  raw = String(raw).split(String.fromCharCode(13, 10)).join(String.fromCharCode(10));
+  const p = parseHeaders(raw);
+  const ct = p.h['content-type'] || '';
+  const cte = (p.h['content-transfer-encoding'] || '').toLowerCase();
+  const m = /boundary="?([^";\s]+)"?/i.exec(ct);
+  if (m) {
+    const parts = raw.split('--' + m[1]);
+    for (let i = 0; i < parts.length; i++) {
+      if (/content-type:\s*text\/html/i.test(parts[i])) return htmlPartOf(parts[i].replace(/^\r?\n/, ''));
+    }
+    return '';
+  }
+  if (!/text\/html/i.test(ct)) return '';
+  let body = p.body;
+  if (cte === 'base64') { try { body = Buffer.from(body, 'base64').toString('utf8'); } catch (e) {} }
+  else if (cte === 'quoted-printable') {
+    body = body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, function (mm, hx) {
+      return String.fromCharCode(parseInt(hx, 16));
+    });
+  }
+  return body;
+}
+
 const sudoRead = (f) => new Promise(function (resolve) {
   execFile('sudo', ['cat', f], { maxBuffer: 8e6, timeout: 15000 }, function (e, so) { resolve(so || ''); });
 });
@@ -539,7 +613,10 @@ app.get('/api/inbox/msg', async (req, res) => {
     subject: decodeWords(p.h.subject || '(no subject)'), date: p.h.date || '',
     authResults: p.h['authentication-results'] || '',
     dkim: p.h['dkim-signature'] ? 'present' : 'none',
+    messageId: p.h['message-id'] || '',
+    references: p.h['references'] || '',
     body: textPartOf(raw).slice(0, 200000),
+    html: htmlPartOf(raw).slice(0, 400000),
   });
 });
 
