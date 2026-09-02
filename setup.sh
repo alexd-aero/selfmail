@@ -91,8 +91,16 @@ report_smtp() {
     *)
       warn "port 25 accepted the connection but sent no greeting"
       warn "that is exactly what makes the web UI report \"Greeting never received\""
-      warn "smtpd consults the OpenDKIM milter before it greets - check:"
-      warn "  systemctl status opendkim ; journalctl -u opendkim -n 30"
+      if postfix status >/dev/null 2>&1; then
+        warn "postfix IS running, so smtpd is stalling before it greets - it consults"
+        warn "the OpenDKIM milter first. Check:"
+        warn "  systemctl status opendkim ; journalctl -u opendkim -n 30"
+      else
+        warn "postfix is NOT running, so this is NOT postfix - something else owns"
+        warn "port 25 and never answers. That is what your mail client is talking to."
+        warn "Why postfix could not bind:"
+        warn "  journalctl -u postfix -n 30 | grep -iE 'bind|fatal'"
+      fi
       ;;
   esac
   echo "  Holding port 25 right now:"

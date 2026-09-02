@@ -198,13 +198,39 @@ function probeSmtp(timeoutMs) {
   });
 }
 
-function explainProbe(p) {
+// mailq talks to the master's showq socket, so its failure is the honest test
+// of whether Postfix is really up. `systemctl is-active postfix` is not: on
+// Debian/Ubuntu postfix.service is a wrapper that reports active regardless.
+// Returns true, false, or null when mailq itself could not be run.
+async function postfixRunning() {
+  const q = (await sh('mailq', [])).trim();
+  if (!q) return null;
+  return !/mail system is down|Queue report unavailable|No such file or directory/i.test(q);
+}
+
+// `up` is the result of postfixRunning(). Silence on port 25 means two very
+// different things depending on it, and blaming the milter when Postfix is not
+// even running sends people after the wrong daemon.
+function explainProbe(p, up) {
   if (p.ok) return '';
   if (p.code === 'NOGREETING') {
-    return 'Postfix accepted the connection on 127.0.0.1:25 but sent no greeting within ' +
-      Math.round(p.ms / 1000) + 's. smtpd asks the OpenDKIM milter about every connection ' +
-      'before it greets, so a milter that is listening but not answering stalls it here. ' +
-      'Check: systemctl status opendkim - then run sudo ./update.sh, which caps that wait.';
+    const lead = 'Something accepted the connection on 127.0.0.1:25 but sent no greeting within ' +
+      Math.round(p.ms / 1000) + 's. ';
+    if (up === false) {
+      return lead + 'Postfix is NOT running, so this is not Postfix - something else ' +
+        'is squatting on port 25 and never answering, and that is what the app is talking to. ' +
+        'Find it: sudo ss -lntp | grep :25  - then stop it and: sudo systemctl restart postfix. ' +
+        'Why Postfix failed to bind: journalctl -u postfix -n 30 | grep -iE "bind|fatal"';
+    }
+    if (up === true) {
+      return lead + 'Postfix is running, so smtpd is stalling before it greets. It asks the ' +
+        'OpenDKIM milter about every connection first, so a milter that is listening but not ' +
+        'answering hangs it here. Check: systemctl status opendkim - then run sudo ./update.sh, ' +
+        'which caps that wait.';
+    }
+    return lead + 'Check whether Postfix is the thing listening at all: ' +
+      'sudo postfix status  and  sudo ss -lntp | grep :25. If Postfix is running, ' +
+      'suspect the OpenDKIM milter, which smtpd consults before it greets.';
   }
   if (p.code === 'ECONNREFUSED') {
     return 'Nothing is listening on 127.0.0.1:25, so Postfix is not running. ' +
@@ -422,8 +448,9 @@ app.post('/api/send', async (req, res) => {
   }
 
   const probe = await probeSmtp(9000);
+  const up = await postfixRunning();
   finish(Object.assign({}, base, {
-    error: smtpErr.message, diagnosis: explainProbe(probe), via: 'smtp', ok: false,
+    error: smtpErr.message, diagnosis: explainProbe(probe, up), via: 'smtp', ok: false,
   }));
 });
 
@@ -600,7 +627,7 @@ app.get('/api/status', async (req, res) => {
     ok: probe.ok,
     banner: probe.banner,
     ms: probe.ms,
-    detail: probe.ok ? '' : explainProbe(probe),
+    detail: probe.ok ? '' : explainProbe(probe, out.queue ? out.postfix !== 'down' : null),
   };
   res.json(out);
 });
