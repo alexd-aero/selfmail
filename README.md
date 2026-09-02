@@ -71,7 +71,6 @@ Everything it writes lives in `/etc/selfmail`, `/opt/selfmail` and `/var/mail/vh
 sudo ./run.sh      # start everything, print the local and public URLs
 sudo ./kill.sh     # stop selfmail and the tunnel (add --all to stop postfix too)
 sudo ./update.sh   # pull latest, install over the running copy, restart
-sudo ./relay.sh    # send outbound through an SMTP relay (fixes deliverability)
 ```
 
 `update.sh` pulls, copies the new code into `/opt/selfmail`, refreshes
@@ -108,7 +107,13 @@ What actually helps:
 - Have recipients mark the message **Not spam** and add you to their contacts. Engagement is the strongest reputation signal available to you.
 - Send real, varied, low-volume mail. Short "test" messages score badly on their own.
 - Give it time — reputation accrues over days and weeks.
-- **Run `sudo ./relay.sh`.** This is the only reliable fix and it is built in. Outbound goes through an SMTP provider that has proper reverse DNS and a sending reputation, while you keep receiving on your own hardware. Mail is still from your domain and still signed with your DKIM key. Free tiers (Brevo 300/day, SMTP2GO 1000/month, Resend 3000/month) cover personal use.
+- **Check whether your IP is on a blocklist, and remove it.** Query `<reversed-ip>.zen.spamhaus.org` against Spamhaus's own nameserver (public resolvers are refused, which is why most checks come back blank):
+  ```bash
+  NS=$(dig +short NS zen.spamhaus.org | head -1)
+  dig +short 30.7.54.136.zen.spamhaus.org @$NS      # reverse your octets
+  dig +short TXT 30.7.54.136.zen.spamhaus.org @$NS
+  ```
+  `127.0.0.11` is PBL (residential range - self-removable at <https://check.spamhaus.org/>), `127.0.0.3` is CSS, `127.0.0.2` is SBL. A PBL removal is free, takes minutes, and is usually enough to make Microsoft accept your mail.
 
 Measured on a real residential connection, sending direct:
 
@@ -118,7 +123,9 @@ to outlook.com:  550 5.7.1 Service unavailable, Client host [x.x.x.x]
 to gmail.com:    accepted, filed as spam
 ```
 
-Microsoft **hard-rejects** consumer IP ranges listed on Spamhaus's PBL, so mail to Outlook, Hotmail and Live never arrives at all - it is refused, not delayed. That is not something configuration can fix. You can try a self-service PBL removal at <https://check.spamhaus.org/>, but your ISP may simply re-list the range. The relay is the dependable answer.
+Microsoft **hard-rejects** consumer IP ranges listed on Spamhaus's PBL, so mail to Outlook, Hotmail and Live never arrives at all - it is refused, not delayed. The fix is the PBL self-removal above; it is free and usually permanent. Expect a lag of several hours afterwards, because Microsoft's edge nodes cache blocklist answers independently.
+
+The `iprev` failure is separate and cannot be fixed on a consumer line: your PTR is owned by your ISP, and you cannot add a forward record to their domain. A PTR that merely *exists* satisfies most receivers, so this is a penalty rather than a wall - but if you need guaranteed placement, the only real answer is a sending IP whose reverse DNS you control.
 
 selfmail already pins outbound to IPv4, because sending over IPv6 without a PTR record gets rejected outright by Gmail rather than merely filtered.
 
