@@ -128,6 +128,16 @@ journalctl -u selfmail -n 50
 tail -f /var/log/mail.log          # /var/log/maillog on RHEL-family
 ```
 
+**"Relay access denied" when sending, or Postfix seems up but nothing works** — another mail server is holding port 25, so Postfix never bound to it and *that* server is answering with its own policy. On Debian/Ubuntu this is silent, because `postfix.service` is only a wrapper and still reports `active`. Check what really happened:
+```bash
+sudo postfix status                  # the honest answer
+sudo ss -lntp | grep :25             # who actually owns the port
+journalctl -u postfix -n 30          # look for "Address already in use"
+```
+`run.sh` stops and disables the usual culprits (exim4, sendmail, opensmtpd, nullmailer) automatically.
+
+**DNS checks look wrong just after adding records** — the checker queries 1.1.1.1/8.8.8.8/9.9.9.9 directly rather than the system resolver, precisely because a local stub caches NXDOMAIN for the zone's negative TTL and would keep reporting a record missing long after it exists. If a record still reads missing, compare the "Currently resolves to" line against the expected value.
+
 **Mail sends but never arrives** — check the queue with `mailq`. A `status=sent` line in the log means the receiving server accepted it; where it filed it is a separate question.
 
 **DKIM not signing** — `opendkim-testkey -d YOUR_DOMAIN -s YOUR_SELECTOR -vvv` should print `key OK`. "key not secure" just means no DNSSEC and is harmless. If Postfix can't reach the milter socket, confirm it is group-owned by `postfix`.

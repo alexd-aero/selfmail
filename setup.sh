@@ -34,6 +34,33 @@ die()  { printf '\n%sError:%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run with sudo:  sudo ./setup.sh"
 
+
+# Another MTA holding port 25 makes Postfix fail with
+#   fatal: bind 0.0.0.0 port 25: Address already in use
+# and the failure is quiet: on Debian/Ubuntu `systemctl is-active postfix`
+# still reports "active" because postfix.service is only a wrapper. The other
+# server then answers mail with its own policy, typically "Relay access denied".
+clear_port25() {
+  local m stopped=0
+  for m in exim4 exim sendmail nullmailer opensmtpd citadel; do
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${m}\.service"; then
+      if systemctl is-active --quiet "$m" 2>/dev/null; then
+        warn "$m is running and owns port 25 - stopping and disabling it"
+        systemctl stop "$m" 2>/dev/null || true
+        systemctl disable "$m" >/dev/null 2>&1 || true
+        stopped=1
+      fi
+    fi
+  done
+  [ "$stopped" = 1 ] && sleep 2
+  return 0
+}
+
+# Postfix reports success even when the master died, so confirm for real.
+postfix_really_running() {
+  postfix status >/dev/null 2>&1
+}
+
 # ------------------------------------------------------------ platform ----
 step "Checking platform"
 PM=""
@@ -134,6 +161,7 @@ case "$CONFIRM" in y|Y|yes|YES) : ;; *) die "aborted" ;; esac
 
 # ------------------------------------------------------------- packages ---
 step "Installing packages"
+clear_port25
 export DEBIAN_FRONTEND=noninteractive
 
 # Unattended upgrades or a concurrent install will hold the dpkg lock and make
@@ -490,8 +518,15 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now opendkim >/dev/null 2>&1 || true
 systemctl restart opendkim || true
+clear_port25
 systemctl enable --now postfix >/dev/null 2>&1 || true
 systemctl restart postfix || true
+sleep 2
+if ! postfix_really_running; then
+  warn "Postfix did not start. Whatever is on port 25 right now:"
+  ss -lntp 2>/dev/null | awk 'NR==1 || $4 ~ /:25$/' | sed 's/^/    /' || true
+  warn "Stop that service, then run: sudo systemctl restart postfix"
+fi
 systemctl enable --now selfmail >/dev/null 2>&1 || true
 systemctl restart selfmail || true
 if [ "$USE_CF" = 1 ]; then
@@ -504,7 +539,9 @@ sleep 5
 SERVICES="postfix opendkim selfmail"
 [ "$USE_CF" = 1 ] && SERVICES="$SERVICES selfmail-tunnel"
 for s in $SERVICES; do
-  if [ "$(systemctl is-active "$s")" = active ]; then ok "$s running"; else warn "$s is NOT running - check: journalctl -u $s -n 40"; fi
+  if [ "$s" = postfix ]; then
+    if postfix_really_running; then ok "postfix running"; else warn "postfix is NOT running - something else owns port 25 (see above)"; fi
+  elif [ "$(systemctl is-active "$s")" = active ]; then ok "$s running"; else warn "$s is NOT running - check: journalctl -u $s -n 40"; fi
 done
 
 # ---------------------------------------------------------------- finish --

@@ -3,6 +3,13 @@
 const express = require('express');
 const nodemailer = require('nodemailer');
 const dns = require('dns').promises;
+const { Resolver } = require('dns').promises;
+
+// Checks go straight to public resolvers rather than the system one: a local
+// stub (systemd-resolved) caches NXDOMAIN for the zone's negative TTL, so a
+// record added seconds ago can read as missing for many minutes.
+const pubdns = new Resolver({ timeout: 4000, tries: 2 });
+try { pubdns.setServers(['1.1.1.1', '8.8.8.8', '9.9.9.9']); } catch (e) { /* fall back */ }
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -217,23 +224,24 @@ app.get('/api/dns-check', async (req, res) => {
   const c = loadCfg();
   const recs = buildRecords(c);
   const out = [];
+  const R = pubdns;
 
   for (const r of recs) {
     const row = { key: r.key, type: r.type, name: r.name, expected: r.content, ok: false, found: '', detail: '' };
     try {
       if (r.type === 'A') {
-        const v = await dns.resolve4(r.name);
+        const v = await R.resolve4(r.name);
         row.found = v.join(', ');
         row.ok = v.indexOf(r.content) !== -1;
         if (!row.ok && v.length) row.detail = 'Resolves elsewhere - if this is Cloudflare, switch the record to "DNS only".';
       } else if (r.type === 'MX') {
-        const v = await dns.resolveMx(r.name);
+        const v = await R.resolveMx(r.name);
         row.found = v.map(function (x) { return x.priority + ' ' + x.exchange; }).join(', ');
         row.ok = v.some(function (x) {
           return x.exchange.replace(/\.$/, '').toLowerCase() === r.content.toLowerCase();
         });
       } else {
-        const v = await dns.resolveTxt(r.name);
+        const v = await R.resolveTxt(r.name);
         const joined = v.map(function (x) { return x.join(''); });
         row.found = joined.join(' | ');
         if (r.key === 'spf') {
@@ -439,7 +447,13 @@ app.get('/api/status', async (req, res) => {
   out.currentIp = (await sh('curl', ['-4', '-s', '--max-time', '8', 'https://api.ipify.org'])).trim();
   out.ipMatchesConfig = out.currentIp === c.publicIp;
   out.queue = (await sh('mailq', [])).trim().slice(-4000);
-  out.postfix = (await sh('systemctl', ['is-active', 'postfix'])).trim();
+  const unit = (await sh('systemctl', ['is-active', 'postfix'])).trim();
+  if (/mail system is down|Queue report unavailable|No such file or directory/i.test(out.queue)) {
+    out.postfix = 'down';
+    out.postfixDetail = 'Postfix is not actually running. Most often something else already owns port 25 - check: sudo ss -lntp | grep :25';
+  } else {
+    out.postfix = unit;
+  }
   out.opendkim = (await sh('systemctl', ['is-active', 'opendkim'])).trim();
   res.json(out);
 });
@@ -447,6 +461,7 @@ app.get('/api/status', async (req, res) => {
 app.get('/api/log', async (req, res) => {
   let t = await sh('sudo', ['tail', '-n', '200', '/var/log/mail.log']);
   if (!t.trim()) t = await sh('sudo', ['tail', '-n', '200', '/var/log/maillog']);
+  if (!t.trim()) t = await sh('journalctl', ['-u', 'postfix@-', '-u', 'postfix', '-n', '200', '--no-pager']);
   res.type('text/plain').send(t || '(no mail log readable)');
 });
 
