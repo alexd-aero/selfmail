@@ -71,6 +71,7 @@ Everything it writes lives in `/etc/selfmail`, `/opt/selfmail` and `/var/mail/vh
 sudo ./run.sh      # start everything, print the local and public URLs
 sudo ./kill.sh     # stop selfmail and the tunnel (add --all to stop postfix too)
 sudo ./update.sh   # pull latest, install over the running copy, restart
+sudo ./relay.sh    # send outbound through an SMTP relay (fixes deliverability)
 ```
 
 `update.sh` pulls, copies the new code into `/opt/selfmail`, refreshes
@@ -107,7 +108,17 @@ What actually helps:
 - Have recipients mark the message **Not spam** and add you to their contacts. Engagement is the strongest reputation signal available to you.
 - Send real, varied, low-volume mail. Short "test" messages score badly on their own.
 - Give it time — reputation accrues over days and weeks.
-- If you need guaranteed inbox placement, send through a host with controllable rDNS (a small VPS, or an SMTP relay). This is the only reliable fix, and it is the honest answer.
+- **Run `sudo ./relay.sh`.** This is the only reliable fix and it is built in. Outbound goes through an SMTP provider that has proper reverse DNS and a sending reputation, while you keep receiving on your own hardware. Mail is still from your domain and still signed with your DKIM key. Free tiers (Brevo 300/day, SMTP2GO 1000/month, Resend 3000/month) cover personal use.
+
+Measured on a real residential connection, sending direct:
+
+```
+to outlook.com:  550 5.7.1 Service unavailable, Client host [x.x.x.x]
+                 blocked using Spamhaus
+to gmail.com:    accepted, filed as spam
+```
+
+Microsoft **hard-rejects** consumer IP ranges listed on Spamhaus's PBL, so mail to Outlook, Hotmail and Live never arrives at all - it is refused, not delayed. That is not something configuration can fix. You can try a self-service PBL removal at <https://check.spamhaus.org/>, but your ISP may simply re-list the range. The relay is the dependable answer.
 
 selfmail already pins outbound to IPv4, because sending over IPv6 without a PTR record gets rejected outright by Gmail rather than merely filtered.
 
