@@ -10,7 +10,14 @@ state() { local s; s="$(systemctl is-active "$1" 2>/dev/null)"; [ "$s" = active 
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-  status)
+  status|url)
+    # the settings file is private to the mail user: read it through sudo when needed
+    if [ ! -r "$ETC/config.json" ] && [ "$(id -u)" -ne 0 ]; then exec sudo "$0" "$cmd" "$@"; fi
+    if [ "$cmd" = url ]; then
+      p="$(cfg 'c.port||8088')"
+      for ip in $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.)' | head -3); do echo "  open       http://$ip:$p"; done
+      exit 0
+    fi
     printf '%sselfmail%s %s\n' "$B" "$Z" "$("$NODE" -p "require('$APP/app/package.json').version" 2>/dev/null)"
     printf '  web mail   %s\n' "$(state selfmail)"
     printf '  postfix    %s\n' "$(state postfix)"
@@ -18,10 +25,6 @@ case "$cmd" in
     u="$(cfg 'c.tunnelUnit||""')"; [ -n "$u" ] && [ "$(cfg c.mode)" = relay ] && printf '  tunnel     %s (%s)\n' "$(state "$u")" "$u"
     printf '  address    %s@%s\n' "$(cfg c.mailbox)" "$(cfg c.domain)"
     "$0" url
-    ;;
-  url)
-    p="$(cfg 'c.port||8088')"
-    for ip in $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.)' | head -3); do echo "  open       http://$ip:$p"; done
     ;;
   start|stop|restart)
     need_root "$cmd"; systemctl "$cmd" selfmail && echo "selfmail: $cmd ok"
