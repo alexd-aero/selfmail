@@ -8,8 +8,9 @@ app_version() { sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$APP/app/package.js
 port() { sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$LINK" 2>/dev/null | head -1; }
 url() { echo "http://127.0.0.1:$(port || true)"; }
 # Root goes through the host: it asked you first and hands sudo the password itself (sudo -A).
+# Root: the host hands sudo the password (sudo -A); run from a terminal, sudo may simply ask; otherwise never prompt.
 SUDO=(sudo -n)
-[ -n "${SUDO_ASKPASS:-}" ] && SUDO=(sudo -A)
+if [ -n "${SUDO_ASKPASS:-}" ]; then SUDO=(sudo -A); elif [ -t 0 ]; then SUDO=(sudo); fi
 api() { # api METHOD PATH [JSON]
   curl -fsS --max-time 20 -X "$1" -H "x-selfmail-key: $(cat "$KEY" 2>/dev/null)" -H 'X-Selfmail: 1' -H 'Content-Type: application/json' \
        ${3:+--data "$3"} "$(url)$2"
