@@ -124,6 +124,41 @@ route('GET', '/api/state', async (req, res, p, s) => {
   });
 });
 
+// ---------------------------------------------------------- logos, contacts --
+// Sender logos: fetched once by the server (so the browser never contacts a
+// third party), cached for a week. Personal mail providers get initials instead.
+const AV_DIR = path.join(cfg.VAR, 'avatars');
+const PERSONAL = new Set(['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'pm.me', 'gmx.com', 'gmx.net', 'mail.com', 'yandex.ru', 'yandex.com', 'zoho.com', 'fastmail.com', 'hey.com', 'tutanota.com', 'qq.com', '163.com', 'mail.ru']);
+route('GET', '/api/avatar/:domain', async (req, res, p) => {
+  const d = isp.registrable(String(p.domain).toLowerCase());
+  if (!isDomain(d) || PERSONAL.has(d) || d === isp.registrable(cfg.load().domain)) return json(res, 404, { error: 'none' });
+  const base = path.join(AV_DIR, d);
+  const send = buf => { res.writeHead(200, { ...SEC, 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=604800' }); res.end(buf); };
+  try { return send(fs.readFileSync(base + '.png')); } catch (e) { /* not cached */ }
+  try { if (Date.now() - fs.statSync(base + '.none').mtimeMs < 7 * 864e5) return json(res, 404, { error: 'none' }); } catch (e) { /* not tried yet */ }
+  fs.mkdirSync(AV_DIR, { recursive: true });
+  try {
+    const r = await fetch(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=64`, { signal: AbortSignal.timeout(6000) });
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (r.ok && /^image\//.test(r.headers.get('content-type') || '') && buf.length > 150 && buf.length < 100e3) { fs.writeFileSync(base + '.png', buf); return send(buf); }
+  } catch (e) { /* offline */ }
+  fs.writeFileSync(base + '.none', '');
+  json(res, 404, { error: 'none' });
+});
+route('GET', '/api/contacts', async (req, res) => {
+  const c = cfg.load(), rows = await store.all(), map = new Map();
+  const add = (a, at, w) => {
+    if (!a || !a.address || a.address.endsWith('@' + c.domain)) return;
+    const x = map.get(a.address) || { name: '', address: a.address, score: 0, last: 0 };
+    if (a.name && !x.name) x.name = a.name; x.score += w; x.last = Math.max(x.last, at); map.set(a.address, x);
+  };
+  for (const r of rows) {
+    if (r.folder === 'sent') for (const a of r.to) add(a, r.date, 3);
+    else if (r.folder !== 'spam' && r.folder !== 'trash') add(r.from, r.date, 1);
+  }
+  json(res, 200, [...map.values()].sort((a, b) => b.score - a.score || b.last - a.last).slice(0, 400));
+});
+
 // ------------------------------------------------------------------- mail --
 route('GET', '/api/folders', async (req, res) => json(res, 200, await store.counts()));
 route('GET', '/api/messages', async (req, res, p, s, url) => {

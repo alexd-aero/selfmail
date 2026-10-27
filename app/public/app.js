@@ -12,7 +12,7 @@ function h(tag, attrs, ...kids) {
     else if (k === 'text') e.textContent = v;
     else if (k === 'html') e.innerHTML = v;
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
-    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+    else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) e.style.setProperty(sk, sv); else e.style[sk] = sv; } }
     else e.setAttribute(k, v === true ? '' : v);
   }
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
@@ -65,6 +65,11 @@ const P = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   mono: '<path d="m4 17 6-6-6-6M12 19h8"/>',
+  verified: '<path d="M12 2.5l2.4 1.8 3-.2.9 2.9 2.4 1.8-.9 2.9.9 2.9-2.4 1.8-.9 2.9-3-.2L12 21.5l-2.4-1.8-3 .2-.9-2.9-2.4-1.8.9-2.9-.9-2.9 2.4-1.8.9-2.9 3 .2z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  keyboard: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h8M6 13h.01M18 13h.01"/>',
+  palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a6 6 0 0 0 6-6c0-4.9-4.5-8.6-10-8.6z"/>',
+  sparkle: '<path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/><path d="M19 3v4M17 5h4"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z"/>',
 };
 const icon = (n, cls = 'i') => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', cls); s.innerHTML = P[n] || ''; return s; };
@@ -81,8 +86,14 @@ async function api(method, url, body) {
 }
 
 function toast(msg, opts = {}) {
-  const t = h('div', { class: 'toast' + (opts.bad ? ' bad' : '') }, h('span', {}, msg), opts.action ? h('button', { onclick: () => { opts.action.fn(); t.remove(); } }, opts.action.label) : null);
-  $('.toasts').append(t); setTimeout(() => t.remove(), opts.ms || (opts.bad ? 6500 : 3200));
+  const ms = opts.ms || (opts.bad ? 6500 : 3400);
+  const t = h('div', { class: 'toast' + (opts.bad ? ' bad' : ''), role: 'status' },
+    h('span', { class: 'ti' }, icon(opts.bad ? 'x' : (opts.icon || 'check'))), h('span', {}, msg),
+    opts.action ? h('button', { onclick: () => { opts.action.fn(); kill(); } }, opts.action.label) : null,
+    opts.bar ? h('i', { class: 'bar', style: { '--ms': ms + 'ms' } }) : null);
+  const kill = () => { if (!t.isConnected) return; t.classList.add('out'); setTimeout(() => t.remove(), 260); };
+  $('.toasts')?.append(t); const timer = setTimeout(kill, ms);
+  return { close: () => { clearTimeout(timer); kill(); } };
 }
 const fail = e => toast(e.message || String(e), { bad: true });
 
@@ -122,22 +133,58 @@ function fmtWhen(ts) {
 const fmtFull = ts => ts ? new Date(ts).toLocaleString([], { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
 const nameOf = a => a ? (a.name || a.address || '') : '';
-function avatar(a) {
-  const s = (a?.name || a?.address || '?').trim();
-  let hsh = 0; for (const ch of (a?.address || s)) hsh = (hsh * 31 + ch.charCodeAt(0)) | 0;
+const failedLogos = new Set();
+function avatar(a, cls = '') {
+  const addr = String(a?.address || '').toLowerCase(), s = String(a?.name || addr || '?').trim();
+  let hsh = 0; for (const ch of (addr || s)) hsh = (hsh * 31 + ch.charCodeAt(0)) | 0;
+  const h1 = Math.abs(hsh) % 360;
   const letter = ([...s.replace(/^["'(]+/, '')][0] || '?').toUpperCase();
-  return h('div', { class: 'avatar', style: { background: `hsl(${Math.abs(hsh) % 360} 55% 48%)` }, text: letter });
+  const box = h('div', { class: 'avatar ' + cls, style: { '--h1': h1, '--h2': (h1 + 45) % 360 } }, h('span', { text: letter }));
+  const dom = addr.split('@')[1];
+  if (dom && localStorage.getItem('sm-logos') !== '0' && !failedLogos.has(dom) && dom !== S.me?.domain) {
+    const img = new Image(); img.alt = ''; img.decoding = 'async';
+    img.onload = () => box.append(img); img.onerror = () => failedLogos.add(dom);
+    img.src = '/api/avatar/' + encodeURIComponent(dom);
+  }
+  return box;
 }
+const kbd = t => h('span', { class: 'kbd', text: t });
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+function fmtAgo(ts) {
+  if (!ts) return '';
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60) return 'Just now'; if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400 && new Date(ts).toDateString() === new Date().toDateString()) return `${Math.floor(s / 3600)} hour${s >= 7200 ? 's' : ''} ago`;
+  if (s < 172800 && new Date(ts).getDate() === new Date(Date.now() - 864e5).getDate()) return 'Yesterday';
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)} days ago`;
+  return fmtWhen(ts);
+}
+function dayGroup(ts) {
+  if (!ts) return 'Older';
+  const d = new Date(ts), now = new Date();
+  const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 864e5);
+  if (diff <= 0) return 'Today'; if (diff === 1) return 'Yesterday'; if (diff < 7) return 'This week';
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'Earlier this month';
+  return d.toLocaleDateString([], { month: 'long', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+}
+const aliasChip = a => { let x = 0; for (const c of a) x = (x * 31 + c.charCodeAt(0)) | 0; return h('span', { class: 'chip acc', style: { '--h': Math.abs(x) % 360 }, text: '@' + a.split('@')[0], title: a }); };
 function copyText(t) { navigator.clipboard?.writeText(t).then(() => toast('Copied'), () => toast('Copy failed', { bad: true })); }
 
 // ============================================================== state ====
 const S = { me: null, folders: [], aliases: [], view: 'mail', folder: 'inbox', alias: '', q: '', items: [], total: 0, offset: 0, sel: new Set(), open: null, msg: null, images: new Set(), mono: {}, loading: false };
 const FOLDER_ICON = { inbox: 'inbox', starred: 'star', sent: 'send', drafts: 'draft', archive: 'archive', spam: 'spam', trash: 'trash' };
 const theme = () => localStorage.getItem('sm-theme') || 'auto';
+const ACCENTS = { violet: ['#6d5efc', '#a855f7', '#ec4899'], ocean: ['#0ea5e9', '#6366f1', '#22d3ee'], emerald: ['#10b981', '#06b6d4', '#84cc16'], sunset: ['#f97316', '#ef4444', '#ec4899'], rose: ['#e11d48', '#db2777', '#a855f7'], gold: ['#f59e0b', '#f97316', '#eab308'] };
 function applyTheme() {
   const t = theme(), dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  const a = ACCENTS[localStorage.getItem('sm-accent')] || ACCENTS.violet;
+  ['--a1', '--a2', '--a3'].forEach((k, i) => root.style.setProperty(k, a[i]));
+  root.dataset.density = localStorage.getItem('sm-density') || 'comfortable';
 }
+function toggleTheme() { localStorage.setItem('sm-theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); applyTheme(); renderNav(); }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 applyTheme();
 
@@ -147,16 +194,17 @@ function showLogin(msg) {
   const err = h('div', { class: 'err', text: msg || '' });
   const u = h('input', { type: 'text', name: 'username', autocomplete: 'username', required: true, autofocus: true });
   const p = h('input', { type: 'password', name: 'password', autocomplete: 'current-password', required: true });
-  const btn = h('button', { class: 'btn pri', type: 'submit', style: { height: '42px' } }, 'Sign in');
+  const btn = h('button', { class: 'btn pri', type: 'submit', style: { height: '46px', fontSize: '15px' } }, 'Sign in', icon('forward'));
   const form = h('form', { onsubmit: async e => {
     e.preventDefault(); btn.disabled = true; err.textContent = '';
     try { await api('POST', '/api/login', { user: u.value, pass: p.value }); boot(); }
     catch (x) { err.textContent = x.message; btn.disabled = false; p.select(); }
   } },
     h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('unread')), 'selfmail'),
-    h('div', {}, h('h1', { text: 'Sign in to your mail' }), h('p', { text: 'Use the account created when selfmail was installed.' })),
+    h('div', {}, h('h1', { text: 'Welcome back' }), h('p', { text: 'Sign in to your own mail server.' })),
     h('label', { class: 'f' }, 'Username', u), h('label', { class: 'f' }, 'Password', p), err, btn);
-  document.body.replaceChildren(h('div', { class: 'login' }, form), h('div', { class: 'toasts' }));
+  form.classList.add('glass');
+  document.body.replaceChildren(h('div', { class: 'login' }, h('div', { class: 'orb a' }), h('div', { class: 'orb b' }), h('div', { class: 'orb c' }), form), h('div', { class: 'toasts' }));
   u.focus();
 }
 
@@ -169,7 +217,7 @@ function termsList(terms) { return h('ol', { class: 'terms' }, terms.map(t => h(
 async function showAgreement() {
   if ($('.agree-page')) return;
   document.title = 'Responsible use · selfmail';
-  document.body.replaceChildren(h('div', { class: 'login agree-page' }, h('div', { class: 'agree-card' }, h('span', { class: 'spin' }))), h('div', { class: 'toasts' }));
+  document.body.replaceChildren(h('div', { class: 'login agree-page' }, h('div', { class: 'orb a' }), h('div', { class: 'orb b' }), h('div', { class: 'agree-card glass' }, h('span', { class: 'spin' }))), h('div', { class: 'toasts' }));
   let a;
   try { a = await (await fetch('/api/agreement', { credentials: 'same-origin' })).json(); } catch (e) { return toast('Could not load the agreement — check the connection and reload.', { bad: true }); }
   const name = h('input', { type: 'text', placeholder: 'Your full name', autocomplete: 'name' });
@@ -201,9 +249,9 @@ function shell() {
   document.body.replaceChildren(
     h('div', { class: 'shell', id: 'shell' },
       h('aside', { class: 'nav', id: 'nav' }),
-      h('section', { class: 'list', id: 'list' }),
-      h('section', { class: 'reader', id: 'reader' }),
-      h('section', { class: 'page hide', id: 'page' })),
+      h('section', { class: 'list glass', id: 'list' }),
+      h('section', { class: 'reader glass', id: 'reader' }),
+      h('section', { class: 'page glass hide', id: 'page' })),
     h('div', { class: 'toasts' }));
 }
 
@@ -242,8 +290,9 @@ function renderNav() {
       link('#/status', 'pulse', 'Server status', '', S.view === 'status'),
       link('#/settings', 'gear', 'Settings', '', S.view === 'settings'),
       h('div', { class: 'me' }, avatar({ name: S.me.user }), h('div', { class: 'grow' }, h('b', { text: S.me.user }), S.me.address),
-        ib(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', 'Switch light / dark', () => { localStorage.setItem('sm-theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); applyTheme(); renderNav(); }),
+        ib(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', 'Switch light / dark', toggleTheme),
         ib('logout', 'Sign out', async () => { await api('POST', '/api/logout').catch(() => {}); showLogin('You have been signed out.'); }))));
+  $('a[href="#/f/inbox"] .n', nav)?.classList.add('hot');
   $('.nav-scroll', nav).scrollTop = oldScroll;
   const list = $('.addr-list', nav); if (list) list.scrollTop = oldList;
   if (hadFocus) { const i = $('.addr-filter input', nav); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
@@ -260,6 +309,7 @@ const folderTitle = () => S.alias ? S.alias : S.folder === 'all' ? 'All mail' : 
 async function loadList(more = false) {
   if (!more) { S.offset = 0; }
   S.loading = true;
+  if (!S.items.length) renderList();
   const qs = new URLSearchParams({ folder: S.alias ? 'all' : S.folder, q: S.q, alias: S.alias, offset: S.offset, limit: 60 });
   try {
     const r = await api('GET', '/api/messages?' + qs);
@@ -267,49 +317,74 @@ async function loadList(more = false) {
     for (const id of [...S.sel]) if (!S.items.some(x => x.id === id)) S.sel.delete(id);
   } catch (e) { fail(e); }
   S.loading = false;
-  renderList();
+  renderList(S.animateNext); S.animateNext = false;
 }
 
-function renderList() {
+function skeleton(n = 9) {
+  return Array.from({ length: n }, (_, i) => h('div', { class: 'skel' }, h('i', { style: { width: '38px', height: '38px', borderRadius: '12px', flex: 'none' } }),
+    h('div', { style: { flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '3px' } }, h('i', { style: { width: `${38 + (i * 13) % 30}%`, height: '11px' } }), h('i', { style: { width: `${62 + (i * 7) % 28}%`, height: '10px' } }), h('i', { style: { width: `${48 + (i * 11) % 40}%`, height: '9px' } }))));
+}
+function renderList(animate) {
   const box = $('#list'); if (!box) return;
-  const head = $('.list-head', box) || h('div', { class: 'list-head' });
-  if (!head.isConnected) {
+  if (!$('.list-head', box)) {
     const search = h('input', { type: 'search', placeholder: 'Search mail', value: S.q, 'aria-label': 'Search mail', oninput: debounce(e => { S.q = e.target.value.trim(); loadList(); }, 250) });
-    head.append(h('h2', {}, ib('menu', 'Menu', () => $('#shell').classList.toggle('navopen'), 'mobile-only'), h('span', { class: 'ttl grow' }), ib('refresh', 'Refresh', () => { loadFolders(); loadList(); })),
-      h('div', { class: 'search' }, icon('search'), search), h('div', { class: 'bulk' }));
-    box.replaceChildren(head, h('div', { class: 'rows', id: 'rows' }));
+    box.replaceChildren(h('div', { class: 'list-head' },
+      h('h2', {}, ib('menu', 'Menu', () => $('#shell').classList.toggle('navopen'), 'mobile-only'), h('span', { class: 'ttl grow' }), ib('refresh', 'Refresh', () => { loadFolders(); loadList(); })),
+      h('div', { class: 'search' }, icon('search'), search, kbd(MAC ? '⌘ K' : 'Ctrl K')),
+      h('div', { class: 'bulk' })),
+    h('div', { class: 'rows', id: 'rows' }));
   }
-  $('.ttl', head).textContent = folderTitle();
-  $('input[type=search]', head).value !== S.q && ($('input[type=search]', head).value = S.q);
+  $('.ttl', box).textContent = folderTitle();
+  const si = $('.search input', box); if (document.activeElement !== si && si.value !== S.q) si.value = S.q;
   renderBulk();
   const rows = $('#rows');
+  rows.classList.toggle('selecting', S.sel.size > 0);
   if (!S.items.length) {
-    rows.replaceChildren(h('div', { class: 'empty' }, h('div', { class: 'big', text: S.q ? '🔍' : S.folder === 'trash' ? '🗑️' : '📭' }), h('b', { text: S.loading ? 'Loading…' : S.q ? 'Nothing matches your search' : 'Nothing here yet' }),
-      S.q ? h('span', { text: 'Try fewer words, or from:name / to:alias / subject:word / has:attachment' }) : null));
+    if (S.loading) { rows.replaceChildren(...skeleton()); return; }
+    const art = { trash: 'trash', spam: 'spam', sent: 'send', drafts: 'draft', starred: 'star', archive: 'archive' }[S.folder] || 'inbox';
+    const zero = S.folder === 'inbox' && !S.alias && !S.q;
+    rows.replaceChildren(h('div', { class: 'empty' }, h('div', { class: 'art' }, icon(S.q ? 'search' : zero ? 'sparkle' : art)),
+      h('b', { text: S.q ? 'Nothing matches your search' : zero ? 'Inbox zero' : 'Nothing here yet' }),
+      h('span', { text: S.q ? 'Try fewer words, or from:name · to:alias · subject:word · has:attachment' : zero ? 'You’re all caught up. Enjoy it.' : '' })));
     return;
   }
-  const frag = document.createDocumentFragment();
+  const frag = document.createDocumentFragment(); let lastG = '', i = 0;
+  const act = (ic, tip, fn, cls = '') => h('button', { class: 'ib ' + cls, title: tip, 'aria-label': tip, onclick: e => { e.stopPropagation(); fn(); } }, icon(ic));
   for (const m of S.items) {
-    const who = S.folder === 'sent' || S.folder === 'drafts' || m.folder === 'sent' || m.folder === 'drafts' ? 'To: ' + (m.to.map(nameOf).join(', ') || '(no recipient)') : nameOf(m.from) || '(unknown sender)';
-    const showAlias = m.rcpt && m.rcpt !== S.me.address && !S.alias;
-    const cb = h('input', { type: 'checkbox', 'aria-label': 'Select', checked: S.sel.has(m.id), onclick: e => { e.stopPropagation(); e.target.checked ? S.sel.add(m.id) : S.sel.delete(m.id); renderBulk(); } });
-    const star = h('button', { class: 'star' + (m.starred ? ' on' : ''), title: m.starred ? 'Unstar' : 'Star', onclick: e => { e.stopPropagation(); flag([m.id], m.starred ? '' : 'F', m.starred ? 'F' : ''); } }, icon('star'));
-    frag.append(h('div', { class: `mrow ${m.unread ? 'unread' : ''} ${S.open === m.id ? 'on' : ''}`, 'data-id': m.id, onclick: () => openMsg(m.id) },
-      h('div', { class: 'ck' }, cb, star),
-      h('div', { class: 'who' }, who),
-      h('div', { class: 'when' }, m.attach ? icon('clip') : null, fmtWhen(m.date)),
-      h('div', { class: 'line2' }, h('span', { class: 'sub', text: m.subject || '(no subject)' }), m.snippet ? ` — ${m.snippet}` : '', showAlias ? h('span', { class: 'chip acc tag', text: m.rcpt.split('@')[0] }) : null,
-        S.folder === 'all' && m.folder !== 'inbox' ? h('span', { class: 'chip tag', text: m.folder }) : null)));
+    const g = dayGroup(m.date);
+    if (g !== lastG) { frag.append(h('div', { class: 'ghead', style: { '--i': Math.min(i++, 16) }, text: g })); lastG = g; }
+    const outgoing = m.folder === 'sent' || m.folder === 'drafts';
+    const who = outgoing ? 'To: ' + (m.to.map(nameOf).join(', ') || '(no recipient)') : nameOf(m.from) || '(unknown sender)';
+    const checked = S.sel.has(m.id);
+    const cb = h('input', { type: 'checkbox', 'aria-label': 'Select', checked, onclick: e => { e.stopPropagation(); e.target.checked ? S.sel.add(m.id) : S.sel.delete(m.id); e.target.closest('.mrow').classList.toggle('checked', e.target.checked); rows.classList.toggle('selecting', S.sel.size > 0); renderBulk(); } });
+    const chips = [];
+    if (m.rcpt && m.rcpt !== S.me.address && !S.alias) chips.push(aliasChip(m.rcpt));
+    if (S.folder === 'all' && m.folder !== 'inbox') chips.push(h('span', { class: 'chip', text: S.folders.find(f => f.id === m.folder)?.name || m.folder }));
+    if (m.folder === 'drafts') chips.push(h('span', { class: 'chip warn', text: 'Draft' }));
+    frag.append(h('div', { class: `mrow ${m.unread ? 'unread' : ''} ${S.open === m.id ? 'on' : ''} ${checked ? 'checked' : ''}`, 'data-id': m.id, style: { '--i': Math.min(i++, 16) }, onclick: () => openMsg(m.id) },
+      h('label', { class: 'sel', onclick: e => e.stopPropagation() }, cb),
+      avatar(outgoing ? (m.to[0] || m.from) : m.from),
+      h('div', { class: 'mmain' },
+        h('div', { class: 'mtop' }, h('span', { class: 'who', text: who }), m.starred ? icon('star', 'i starred') : null, m.attach ? icon('clip') : null, h('span', { class: 'when', text: fmtWhen(m.date) })),
+        h('div', { class: 'msub', text: m.subject || '(no subject)' }),
+        m.snippet ? h('div', { class: 'msnip', text: m.snippet }) : null,
+        chips.length ? h('div', { class: 'mchips' }, chips) : null),
+      h('div', { class: 'hover-act' },
+        act('archive', 'Archive', () => move([m.id], 'archive')),
+        act('trash', 'Delete', () => del([m.id])),
+        act(m.unread ? 'read' : 'unread', m.unread ? 'Mark as read' : 'Mark as unread', () => flag([m.id], m.unread ? 'S' : '', m.unread ? '' : 'S')),
+        act('star', m.starred ? 'Unstar' : 'Star', () => flag([m.id], m.starred ? '' : 'F', m.starred ? 'F' : ''), m.starred ? 'on' : ''))));
   }
-  if (S.items.length < S.total) frag.append(h('div', { class: 'more' }, h('button', { class: 'btn sm', onclick: () => { S.offset = S.items.length; loadList(true); } }, `Load more (${S.total - S.items.length} left)`)));
+  if (S.items.length < S.total) frag.append(h('div', { class: 'more' }, h('button', { class: 'btn sm', onclick: () => { S.offset = S.items.length; loadList(true); } }, `Load more · ${S.total - S.items.length} left`)));
   rows.replaceChildren(frag);
-  $('#list').classList.toggle('selecting', S.sel.size > 0);
+  if (animate) { rows.classList.remove('enter'); void rows.offsetWidth; rows.classList.add('enter'); clearTimeout(rows._t); rows._t = setTimeout(() => rows.classList.remove('enter'), 1300); }
 }
 
 function renderBulk() {
   const b = $('.bulk'); if (!b) return;
   const n = S.sel.size, all = S.items.length && S.items.every(x => S.sel.has(x.id));
-  const selAll = h('input', { type: 'checkbox', title: 'Select all', checked: all, style: { width: '15px', height: '15px', margin: '0 9px', accentColor: 'var(--accent)' }, onclick: e => { if (e.target.checked) S.items.forEach(x => S.sel.add(x.id)); else S.sel.clear(); renderList(); } });
+  b.classList.toggle('active', n > 0);
+  const selAll = h('input', { type: 'checkbox', class: 'selall', title: 'Select all', checked: all, onclick: e => { if (e.target.checked) S.items.forEach(x => S.sel.add(x.id)); else S.sel.clear(); renderList(); } });
   const ids = () => [...S.sel];
   const inTrash = S.folder === 'trash', inSpam = S.folder === 'spam';
   b.replaceChildren(selAll,
@@ -321,7 +396,7 @@ function renderBulk() {
       ib('folder', 'Move to…', e => moveMenu(e.currentTarget, ids())),
       h('span', { class: 'count', text: `${n} selected` }),
     ] : [
-      h('span', { class: 'count', text: S.total ? `${S.total} ${S.total === 1 ? 'message' : 'messages'}` : '' }),
+      h('span', { class: 'count', text: S.total ? `${S.total} ${S.total === 1 ? 'conversation' : 'conversations'}` : '' }),
       (inTrash || inSpam) && S.total ? h('button', { class: 'btn sm ghost danger', style: { marginLeft: 'auto' }, onclick: async () => { if (await confirmBox(`Empty ${inTrash ? 'Trash' : 'Spam'}?`, `${S.total} messages will be deleted forever.`, 'Empty', true)) { await api('POST', `/api/folders/${S.folder}/empty`).catch(fail); refresh(); } } }, `Empty ${inTrash ? 'Trash' : 'Spam'}`) : '',
     ]));
 }
@@ -390,9 +465,12 @@ function closeMsg() {
   renderEmptyReader();
 }
 function renderEmptyReader() {
-  $('#reader')?.replaceChildren(h('div', { class: 'placeholder' }, h('div', {}, icon('unread'), h('div', { text: 'Choose a message to read it' }), h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '6px' } }, 'Shortcuts: ', h('span', { class: 'kbd', text: 'j' }), ' ', h('span', { class: 'kbd', text: 'k' }), ' move · ', h('span', { class: 'kbd', text: 'c' }), ' compose · ', h('span', { class: 'kbd', text: '/' }), ' search'))));
+  const unread = S.folders.find(f => f.id === 'inbox')?.unread || 0;
+  $('#reader')?.replaceChildren(h('div', { class: 'placeholder' }, h('div', {},
+    h('div', { class: 'art' }, icon(unread ? 'unread' : 'sparkle')),
+    h('b', { text: unread ? `${unread} unread in your inbox` : 'You’re all caught up' }),
+    h('div', { class: 'muted', style: { fontSize: '13px', lineHeight: 2 } }, 'Press ', kbd(MAC ? '⌘ K' : 'Ctrl K'), ' to search anything · ', kbd('c'), ' to write · ', kbd('?'), ' for shortcuts'))));
 }
-
 function renderReaderTools() {
   const m = S.msg, t = $('#reader .rtool'); if (!m || !t) return;
   const inF = m.folder;
@@ -429,31 +507,56 @@ function renderReader() {
   const mono = S.mono[m.id];
   const q = new URLSearchParams(); if (images) q.set('images', '1'); if (mono !== undefined) q.set('mono', mono ? '1' : '0');
   const frame = h('iframe', { title: 'Message', sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', src: `/api/messages/${encodeURIComponent(m.id)}/frame?${q}`, referrerpolicy: 'no-referrer' });
-  const notice = h('div', { class: 'notice hide' }, icon('image'), h('span', { class: 'grow', text: 'Pictures from the internet are hidden to protect your privacy (they can tell the sender you opened this).' }),
+  const notice = h('div', { class: 'notice hide' }, icon('image'), h('span', { class: 'grow', text: 'Pictures from the internet are hidden to protect your privacy — they can tell the sender you opened this.' }),
     h('button', { class: 'btn sm', onclick: () => { S.images.add(m.id); renderReader(); } }, 'Show pictures'));
   frame.addEventListener('load', () => wireFrame(frame, notice));
   const me = S.me.address;
   const toList = [...m.to, ...m.cc].map(a => a.address === me || a.address === m.rcpt ? 'me' : nameOf(a)).join(', ');
+  const a = m.auth || {};
+  const verified = a.dkim === 'pass' && (a.spf === 'pass' || a.dmarc === 'pass');
+  const failed = [a.spf, a.dkim, a.dmarc].some(x => /fail/.test(x || ''));
+  const authTip = `SPF ${a.spf || '—'} · DKIM ${a.dkim || '—'} · DMARC ${a.dmarc || '—'}`;
+  const badge = verified ? h('span', { class: 'verified', title: authTip }, icon('verified'), 'Verified sender') : failed ? h('span', { class: 'verified warn', title: authTip }, icon('spam'), 'Couldn’t verify sender') : null;
+  const isImg = t => /^image\/(png|jpe?g|gif|webp)$/i.test(t);
   rd.replaceChildren(
     h('div', { class: 'rtool' }),
     h('div', { class: 'rbody' }, h('div', { class: 'rcard' },
+      h('div', { class: 'rchips' }, h('span', { class: 'chip', text: S.folders.find(f => f.id === m.folder)?.name || m.folder }), m.rcpt && m.rcpt !== me ? aliasChip(m.rcpt) : null,
+        m.attachments.length ? h('span', { class: 'chip' }, icon('clip'), String(m.attachments.length)) : null),
       h('h1', { text: m.subject || '(no subject)' }),
-      h('div', { class: 'sender' }, avatar(m.from),
+      h('div', { class: 'sender' }, avatar(m.from, 'lg'),
         h('div', { class: 'grow', style: { minWidth: 0 } },
-          h('div', {}, h('span', { class: 'nm', text: m.from.name || m.from.address }), m.from.name ? h('span', { class: 'ad', text: `  <${m.from.address}>` }) : null),
-          h('div', { class: 'meta' }, `to ${toList || 'me'}`, m.rcpt && m.rcpt !== me ? h('span', { class: 'chip acc', text: `via ${m.rcpt}` }) : null, ...authChips(m.auth))),
-        h('div', { class: 'when', text: fmtFull(m.date) })),
+          h('div', {}, h('span', { class: 'nm', text: m.from.name || m.from.address }), m.from.name ? h('span', { class: 'ad', text: `  ${m.from.address}` }) : null),
+          h('div', { class: 'meta' }, `to ${toList || 'me'}`, badge)),
+        h('div', { class: 'when' }, h('b', { text: fmtAgo(m.date) }), h('span', { text: fmtFull(m.date) }))),
       notice,
       !m.hasHtml ? h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '8px' } }, h('button', { class: 'btn sm ghost', title: 'Show this message in a fixed-width font (for tables and text art)', onclick: () => { S.mono[m.id] = !(mono ?? frame.dataset.mono === '1'); renderReader(); } }, icon('mono'), 'Fixed-width')) : null,
       h('div', { class: 'frame-wrap' }, frame),
-      m.attachments.length ? h('div', { class: 'atts' }, m.attachments.map(a => h('a', { class: 'att', href: `/api/messages/${encodeURIComponent(m.id)}/attachments/${a.i}`, download: a.name },
-        h('div', { class: 'ic' }, icon(/^image\//.test(a.type) ? 'image' : 'file')), h('div', { style: { minWidth: 0 } }, h('b', { text: a.name }), h('small', { text: fmtSize(a.size) }))))) : null,
+      m.attachments.length ? h('div', { class: 'atts' }, m.attachments.map(x => h('a', { class: 'att', href: `/api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}`, download: x.name },
+        h('div', { class: 'ic' }, isImg(x.type) ? h('img', { src: `/api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}?view=1`, alt: '', loading: 'lazy' }) : icon('file')),
+        h('div', { style: { minWidth: 0 } }, h('b', { text: x.name }), h('small', { text: `${fmtSize(x.size)} · ${(x.type.split('/')[1] || 'file').toUpperCase()}` }))))) : null,
       m.unsubscribe ? h('p', { class: 'muted', style: { fontSize: '12.5px' } }, 'Mailing list · ', h('a', { href: m.unsubscribe, target: '_blank', rel: 'noopener noreferrer' }, 'Unsubscribe')) : null,
-      h('div', { class: 'replybar' },
-        h('button', { class: 'btn', onclick: () => compose({ mode: 'reply', msg: m }) }, icon('reply'), 'Reply'),
-        m.to.length + m.cc.length > 1 ? h('button', { class: 'btn', onclick: () => compose({ mode: 'replyall', msg: m }) }, icon('replyall'), 'Reply all') : null,
-        h('button', { class: 'btn', onclick: () => compose({ mode: 'forward', msg: m }) }, icon('forward'), 'Forward')))));
+      m.folder !== 'sent' ? quickReply(m) : h('div', { class: 'row', style: { marginTop: '18px' } }, h('button', { class: 'btn', onclick: () => compose({ mode: 'forward', msg: m }) }, icon('forward'), 'Forward')))));
   renderReaderTools();
+}
+
+function quickReply(m) {
+  const ta = h('textarea', { placeholder: `Reply to ${m.from.name || m.from.address}…`, rows: 2 });
+  const box = h('div', { class: 'qreply' }, avatar({ name: S.me.fromName || S.me.user, address: S.me.address }),
+    h('div', { class: 'grow' }, ta, h('div', { class: 'qa' },
+      h('button', { class: 'btn pri sm send-btn', onclick: () => send() }, icon('send'), 'Send'),
+      h('button', { class: 'btn ghost sm', onclick: () => compose({ mode: 'reply', msg: m, text: ta.value }) }, icon('max'), 'Full editor'),
+      m.to.length + m.cc.length > 1 ? h('button', { class: 'btn ghost sm', onclick: () => compose({ mode: 'replyall', msg: m, text: ta.value }) }, icon('replyall'), 'Reply all') : null,
+      h('span', { class: 'grow' }), h('span', { class: 'muted', style: { fontSize: '12px' } }, kbd(MAC ? '⌘' : 'Ctrl'), ' ', kbd('Enter')))));
+  ta.addEventListener('input', () => box.classList.toggle('filled', !!ta.value.trim()));
+  ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send(); } });
+  function send() {
+    const text = ta.value.trim(); if (!text) return ta.focus();
+    const p = { ...replyBasics(m, 'reply'), html: `<p>${esc(text).replace(/\n/g, '<br>')}</p>` + sigHtml() + quoteHtml(m), attachments: [] };
+    ta.value = ''; box.classList.remove('filled'); ta.blur();
+    queueSend(p, () => { ta.value = text; box.classList.add('filled'); ta.focus(); });
+  }
+  return box;
 }
 
 /** Sizes the message frame to its content and routes mailto: links into the composer. */
@@ -479,7 +582,8 @@ function wireFrame(frame, notice) {
 }
 
 // ============================================================ compose ====
-let openComposer = null;
+let openComposer = null, contactsCache = null;
+async function contacts() { if (!contactsCache) contactsCache = await api('GET', '/api/contacts').catch(() => []); return contactsCache; }
 function quoteHtml(m) {
   const who = m.from.name ? `${esc(m.from.name)} &lt;${esc(m.from.address)}&gt;` : esc(m.from.address);
   return `<p><br></p><p>On ${esc(fmtFull(m.date))}, ${who} wrote:</p><blockquote>${esc(m.text || '').replace(/\n/g, '<br>')}</blockquote>`;
@@ -488,36 +592,99 @@ function fwdHtml(m) {
   return `<p><br></p><p>---------- Forwarded message ----------<br>From: ${esc(nameOf(m.from))} &lt;${esc(m.from.address)}&gt;<br>Date: ${esc(fmtFull(m.date))}<br>Subject: ${esc(m.subject)}<br>To: ${esc(m.to.map(a => a.address).join(', '))}</p><p>${esc(m.text || '').replace(/\n/g, '<br>')}</p>`;
 }
 const sigHtml = () => S.me.signature ? `<p><br></p><div class="sig">-- <br>${esc(S.me.signature).replace(/\n/g, '<br>')}</div>` : '';
+const mine = a => String(a || '').toLowerCase().endsWith('@' + S.me.domain);
+/** From / To / Cc / Subject and threading headers for a reply or forward. */
+function replyBasics(m, mode) {
+  const sub = m.subject || '';
+  const from = m.rcpt && mine(m.rcpt) ? m.rcpt : S.me.address;
+  if (mode === 'forward') return { from, to: '', cc: '', bcc: '', subject: /^fwd?:/i.test(sub) ? sub : 'Fwd: ' + sub };
+  const base = (m.replyTo.length ? m.replyTo : [m.from]).map(a => a.address);
+  const to = (m.folder === 'sent' ? m.to.map(a => a.address) : base).join(', ');
+  const cc = mode === 'replyall' ? [...m.to, ...m.cc].map(a => a.address).filter(a => !mine(a) && !base.includes(a)).join(', ') : '';
+  return { from, to, cc, bcc: '', subject: /^re:/i.test(sub) ? sub : 'Re: ' + sub, inReplyTo: m.msgid, references: [...(m.refs || []), m.msgid].filter(Boolean).join(' '), answering: m.id };
+}
+
+/** Undo send: the message waits 5 seconds before it actually leaves. */
+function queueSend(p, onUndo) {
+  let cancelled = false;
+  toast('Sending…', { icon: 'send', ms: 5000, bar: true, action: { label: 'Undo', fn: () => { cancelled = true; onUndo && onUndo(); toast('Not sent — back to editing', { icon: 'back' }); } } });
+  setTimeout(async () => {
+    if (cancelled) return;
+    try { await api('POST', '/api/send', p); toast('Message sent', { icon: 'send' }); contactsCache = null; refresh(); }
+    catch (e) {
+      const v = await dialog('Not sent', h('div', {}, h('p', { style: { margin: '0 0 8px' }, text: e.message }), e.data?.diagnosis ? h('p', { class: 'muted', style: { margin: 0 }, text: e.data.diagnosis }) : null), [['Close', null, 'ghost'], ['Edit message', 'edit', 'pri']]);
+      if (v === 'edit') compose({ restore: p });
+    }
+  }, 5000);
+}
+
+/** Recipients as chips, with suggestions from people you've written to or heard from. */
+function tokenField(initial, placeholder) {
+  const wrap = h('div', { class: 'tokens' });
+  const input = h('input', { type: 'text', placeholder, autocomplete: 'off', spellcheck: 'false' });
+  let list = [], sug = null, sugIdx = 0, sugItems = [], onChange = () => {};
+  const valid = a => /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i.test(a);
+  const parse = str => String(str || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean).map(x => { const mm = /^(.*)<([^>]+)>\s*$/.exec(x); return mm ? { name: mm[1].trim().replace(/^"|"$/g, ''), address: mm[2].trim().toLowerCase() } : { name: '', address: x.toLowerCase() }; });
+  function render() {
+    wrap.replaceChildren(...list.map((t, i) => h('span', { class: 'token' + (valid(t.address) ? '' : ' bad'), title: t.address }, avatar(t), h('span', { text: t.name || t.address }),
+      h('button', { type: 'button', title: 'Remove', onclick: () => { list.splice(i, 1); render(); onChange(); input.focus(); } }, icon('x')))), input);
+  }
+  function add(str) { for (const t of parse(str)) if (!list.some(x => x.address === t.address)) list.push(t); render(); onChange(); }
+  function commit() { if (input.value.trim()) { add(input.value); input.value = ''; } closeSug(); }
+  function closeSug() { sug?.remove(); sug = null; }
+  function pick(c) { if (!list.some(x => x.address === c.address)) list.push({ name: c.name, address: c.address }); input.value = ''; render(); onChange(); closeSug(); input.focus(); }
+  function paintSug() {
+    if (!sug) { sug = h('div', { class: 'suggest' }); wrap.parentElement.append(sug); }
+    sug.replaceChildren(...sugItems.map((c, i) => h('button', { type: 'button', class: i === sugIdx ? 'on' : '', onmousedown: e => { e.preventDefault(); pick(c); }, onmouseenter: () => { sugIdx = i; paintSug(); } },
+      avatar(c), h('div', {}, h('b', { text: c.name || c.address }), c.name ? h('small', { text: c.address }) : null))));
+  }
+  input.addEventListener('keydown', e => {
+    if (sug && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + sugItems.length) % sugItems.length; paintSug(); return; }
+    if ((e.key === 'Enter' || e.key === 'Tab') && sug && sugItems[sugIdx]) { e.preventDefault(); pick(sugItems[sugIdx]); return; }
+    if ((e.key === 'Enter' || e.key === ',' || e.key === ';' || (e.key === 'Tab' && input.value.trim())) && input.value.trim()) { e.preventDefault(); commit(); return; }
+    if (e.key === 'Backspace' && !input.value && list.length) { list.pop(); render(); onChange(); input.focus(); }
+    if (e.key === 'Escape' && sug) { e.stopPropagation(); closeSug(); }
+  });
+  input.addEventListener('input', async () => {
+    const qq = input.value.trim().toLowerCase(); if (!qq) return closeSug();
+    const all = await contacts();
+    sugItems = all.filter(c => !list.some(x => x.address === c.address) && (c.address.includes(qq) || (c.name || '').toLowerCase().includes(qq))).slice(0, 6);
+    sugIdx = 0; sugItems.length ? paintSug() : closeSug();
+  });
+  input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) { if (input.value.trim()) commit(); closeSug(); } }, 150));
+  input.addEventListener('paste', e => { const t = e.clipboardData.getData('text'); if (/[,;\n]/.test(t)) { e.preventDefault(); add(t); } });
+  wrap.addEventListener('click', e => { if (e.target === wrap) input.focus(); });
+  add(initial);
+  return {
+    el: wrap,
+    value: () => { if (input.value.trim()) commit(); return list.map(t => t.name ? `"${t.name.replace(/"/g, '')}" <${t.address}>` : t.address).join(', '); },
+    count: () => list.length + (input.value.trim() ? 1 : 0),
+    invalid: () => list.filter(t => !valid(t.address)).map(t => t.address),
+    onChange: fn => { onChange = fn; }, focus: () => input.focus(),
+  };
+}
 
 function compose(o = {}) {
-  if (openComposer && !openComposer.closed) { if (o.mode || o.to || o.draft) openComposer.close(true); else return openComposer.focus(); }
+  if (openComposer && !openComposer.closed) { if (o.mode || o.to || o.draft || o.restore) openComposer.close(true); else return openComposer.focus(); }
   const me = S.me.address, dom = S.me.domain;
   const m = o.msg;
-  const mine = a => a.endsWith('@' + dom);
-  let to = o.to || '', cc = '', subject = o.subject || '', body = '<p><br></p>' + sigHtml(), from = me;
-  let inReplyTo = '', references = '', answering = '';
+  let base = { from: me, to: o.to || '', cc: '', bcc: '', subject: o.subject || '' };
+  let body = '<p><br></p>' + sigHtml(), atts = [], draftId = null;
   if (m) {
-    from = m.rcpt && mine(m.rcpt) ? m.rcpt : me;
-    const sub = m.subject || '';
-    if (o.mode === 'forward') { subject = /^fwd?:/i.test(sub) ? sub : 'Fwd: ' + sub; body = '<p><br></p>' + sigHtml() + fwdHtml(m); }
-    else {
-      subject = /^re:/i.test(sub) ? sub : 'Re: ' + sub;
-      const base = (m.replyTo.length ? m.replyTo : [m.from]).map(a => a.address);
-      to = (m.folder === 'sent' ? m.to.map(a => a.address) : base).join(', ');
-      if (o.mode === 'replyall') cc = [...m.to, ...m.cc].map(a => a.address).filter(a => !mine(a) && !base.includes(a)).join(', ');
-      body = '<p><br></p>' + sigHtml() + quoteHtml(m);
-      inReplyTo = m.msgid; references = [...(m.refs || []), m.msgid].filter(Boolean).join(' '); answering = m.id;
-    }
+    base = { ...base, ...replyBasics(m, o.mode) };
+    const lead = o.text ? `<p>${esc(o.text).replace(/\n/g, '<br>')}</p>` : '<p><br></p>';
+    body = lead + sigHtml() + (o.mode === 'forward' ? fwdHtml(m) : quoteHtml(m));
   }
-  let draftId = null;
   if (o.draft) {
     const d = o.draft; draftId = d.id;
-    to = d.to.map(a => a.address).join(', '); cc = d.cc.map(a => a.address).join(', '); subject = d.subject; from = d.from.address || me;
+    base = { ...base, from: d.from.address || me, to: d.to.map(a => a.address).join(', '), cc: d.cc.map(a => a.address).join(', '), subject: d.subject };
     body = d.html || esc(d.text || '').replace(/\n/g, '<br>');
   }
-  const froms = [...new Set([from, me, ...S.aliases.map(a => a.address)])].filter(mine);
+  if (o.restore) { const r = o.restore; base = { ...base, ...r }; body = r.html || ''; atts = (r.attachments || []).map(x => ({ ...x, size: Math.round((x.data || '').length * 0.75) })); draftId = r.draft || null; }
+
+  const froms = [...new Set([base.from, me, ...S.aliases.map(a => a.address)])].filter(mine);
   const fromSel = h('select', {}, froms.map(a => h('option', { value: a, text: a })), h('option', { value: '__other', text: 'Another address…' }));
-  fromSel.value = from;
+  fromSel.value = base.from;
   fromSel.addEventListener('change', async () => {
     if (fromSel.value !== '__other') return;
     const inp = h('input', { type: 'text', placeholder: `anything@${dom}` });
@@ -526,49 +693,51 @@ function compose(o = {}) {
     if (a && mine(a) && /^[^\s@]+@/.test(a)) { fromSel.insertBefore(h('option', { value: a, text: a }), fromSel.lastChild); fromSel.value = a; }
     else { fromSel.value = me; if (v) toast(`It has to end with @${dom}`, { bad: true }); }
   });
-  const toIn = h('input', { type: 'text', value: to, placeholder: 'Recipients', autocomplete: 'off' });
-  const ccIn = h('input', { type: 'text', value: cc, placeholder: 'Cc' });
-  const bccIn = h('input', { type: 'text', placeholder: 'Bcc' });
-  const ccRow = h('div', { class: 'cfield' + (cc ? '' : ' hide') }, h('label', { text: 'Cc' }), ccIn);
-  const bccRow = h('div', { class: 'cfield hide' }, h('label', { text: 'Bcc' }), bccIn);
-  const subIn = h('input', { type: 'text', value: subject, placeholder: 'Subject' });
+  const to = tokenField(base.to, 'Who is it for?'), cc = tokenField(base.cc, 'Cc'), bcc = tokenField(base.bcc, 'Bcc');
+  const ccRow = h('div', { class: 'cfield' + (base.cc ? '' : ' hide') }, h('label', { text: 'Cc' }), cc.el);
+  const bccRow = h('div', { class: 'cfield' + (base.bcc ? '' : ' hide') }, h('label', { text: 'Bcc' }), bcc.el);
+  const subIn = h('input', { type: 'text', value: base.subject, placeholder: 'What’s it about?' });
   const ed = h('div', { class: 'editor', contenteditable: 'true', 'data-ph': 'Write your message…', html: body });
-  const atts = [];
   const attBox = h('div', { class: 'catts hide' });
   const status = h('span', { class: 'st grow' });
   const file = h('input', { type: 'file', multiple: true, class: 'hide', onchange: () => { addFiles(file.files); file.value = ''; } });
-  const title = h('span', { class: 't', text: subject || 'New message' });
+  const title = h('span', { class: 't', text: base.subject || (m ? (o.mode === 'forward' ? 'Forward' : 'Reply') : 'New message') });
+  let dirty = !!o.restore, sending = false;
   subIn.addEventListener('input', () => { title.textContent = subIn.value || 'New message'; dirty = true; });
+  [to, cc, bcc].forEach(t => t.onChange(() => { dirty = true; }));
   const exec = (c, v) => { ed.focus(); document.execCommand(c, false, v); dirty = true; };
-  const tool = (ic, t, fn) => ib(ic, t, e => { e.preventDefault(); fn(); });
+  const tool = (ic, t, fn) => h('button', { class: 'ib', title: t, 'aria-label': t, onmousedown: e => e.preventDefault(), onclick: fn }, icon(ic));
   const box = h('div', { class: 'composer', role: 'dialog', 'aria-label': 'Compose' },
-    h('div', { class: 'ctitle' }, title, ib('max', 'Bigger', () => box.classList.toggle('max')), ib('x', 'Close (saves a draft)', () => api_close())),
+    h('div', { class: 'ctitle' }, icon('pen'), title, ib('max', 'Bigger', () => box.classList.toggle('max')), ib('x', 'Close (saves a draft)', () => closeSave())),
     h('div', { class: 'cfield' }, h('label', { text: 'From' }), fromSel),
-    h('div', { class: 'cfield' }, h('label', { text: 'To' }), toIn, h('button', { class: 'lnk', onclick: () => { ccRow.classList.remove('hide'); ccIn.focus(); } }, 'Cc'), h('button', { class: 'lnk', onclick: () => { bccRow.classList.remove('hide'); bccIn.focus(); } }, 'Bcc')),
+    h('div', { class: 'cfield' }, h('label', { text: 'To' }), to.el, h('button', { class: 'lnk', onclick: () => { ccRow.classList.remove('hide'); cc.focus(); } }, 'Cc'), h('button', { class: 'lnk', onclick: () => { bccRow.classList.remove('hide'); bcc.focus(); } }, 'Bcc')),
     ccRow, bccRow,
     h('div', { class: 'cfield' }, h('label', { text: 'Subject' }), subIn),
     h('div', { class: 'ctools' },
-      tool('bold', 'Bold (Ctrl+B)', () => exec('bold')), tool('italic', 'Italic (Ctrl+I)', () => exec('italic')), tool('underline', 'Underline (Ctrl+U)', () => exec('underline')),
+      tool('bold', 'Bold (Ctrl+B)', () => exec('bold')), tool('italic', 'Italic (Ctrl+I)', () => exec('italic')), tool('underline', 'Underline (Ctrl+U)', () => exec('underline')), h('span', { class: 'sep' }),
       tool('link', 'Link (Ctrl+K)', addLink), tool('ul', 'Bulleted list', () => exec('insertUnorderedList')), tool('ol', 'Numbered list', () => exec('insertOrderedList')),
       tool('quote', 'Quote', () => exec('formatBlock', 'blockquote')), tool('eraser', 'Clear formatting', () => exec('removeFormat')),
       h('span', { class: 'grow' }), tool('clip', 'Attach files', () => file.click())),
     ed, attBox,
-    h('div', { class: 'cfoot' }, h('button', { class: 'btn pri', onclick: () => doSend() }, icon('send'), 'Send'), status,
-      ib('trash', 'Discard', async () => { if (await confirmBox('Discard this message?', 'The draft will be deleted.', 'Discard', true)) { if (draftId) await api('POST', '/api/messages/delete', { ids: [draftId] }).catch(() => {}); close(); refresh(); } }), file));
-  const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov && innerWidth > 760) api_close(); } }, box);
+    h('div', { class: 'cfoot' }, h('button', { class: 'btn pri send-btn', onclick: () => doSend() }, 'Send', icon('send')), status,
+      h('span', { class: 'muted', style: { fontSize: '12px' } }, kbd(MAC ? '⌘' : 'Ctrl'), ' ', kbd('Enter')),
+      ib('trash', 'Discard', async () => { if (await confirmBox('Discard this message?', 'The draft will be deleted.', 'Discard', true)) { if (draftId) await api('POST', '/api/messages/delete', { ids: [draftId] }).catch(() => {}); close(); refresh(); } }), file),
+    h('div', { class: 'dropzone' }, 'Drop files to attach'));
+  const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov && innerWidth > 760) closeSave(); } }, box);
   document.body.append(ov);
-  let dirty = false, sending = false;
+  renderAtts();
   ed.addEventListener('input', () => { dirty = true; });
-  [toIn, ccIn, bccIn].forEach(i => i.addEventListener('input', () => { dirty = true; }));
-  ed.addEventListener('paste', e => {
-    const html = e.clipboardData.getData('text/html'); if (!html) return;
-    e.preventDefault(); document.execCommand('insertHTML', false, cleanPaste(html)); dirty = true;
-  });
+  ed.addEventListener('paste', e => { const html = e.clipboardData.getData('text/html'); if (!html) return; e.preventDefault(); document.execCommand('insertHTML', false, cleanPaste(html)); dirty = true; });
   box.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doSend(); }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); addLink(); }
-    if (e.key === 'Escape') { e.stopPropagation(); api_close(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && e.target === ed) { e.preventDefault(); e.stopPropagation(); addLink(); }
+    if (e.key === 'Escape') { e.stopPropagation(); closeSave(); }
   });
+  let dragDepth = 0;
+  box.addEventListener('dragenter', e => { if (!e.dataTransfer?.types?.includes('Files')) return; dragDepth++; box.classList.add('dragging'); });
+  box.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; box.classList.remove('dragging'); } });
+  box.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+  box.addEventListener('drop', e => { if (!e.dataTransfer?.files?.length) return; e.preventDefault(); dragDepth = 0; box.classList.remove('dragging'); addFiles(e.dataTransfer.files); });
   function addLink() {
     const sel = getSelection(); const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     const inp = h('input', { type: 'url', placeholder: 'https://' });
@@ -591,11 +760,10 @@ function compose(o = {}) {
   }
   function renderAtts() {
     attBox.classList.toggle('hide', !atts.length);
-    attBox.replaceChildren(...atts.map((a, i) => h('div', { class: 'catt' }, icon('clip'), h('span', { text: `${a.name} (${fmtSize(a.size)})` }), h('button', { title: 'Remove', onclick: () => { atts.splice(i, 1); renderAtts(); dirty = true; } }, icon('x')))));
+    attBox.replaceChildren(...atts.map((a, i) => h('div', { class: 'catt' }, icon('clip'), h('span', { text: `${a.name} · ${fmtSize(a.size)}` }), h('button', { title: 'Remove', onclick: () => { atts.splice(i, 1); renderAtts(); dirty = true; } }, icon('x')))));
   }
-  ['dragover', 'drop'].forEach(ev => box.addEventListener(ev, e => { if (!e.dataTransfer?.types?.includes('Files')) return; e.preventDefault(); if (ev === 'drop') addFiles(e.dataTransfer.files); }));
-  const payload = () => ({ from: fromSel.value, to: toIn.value, cc: ccIn.value, bcc: bccIn.value, subject: subIn.value, html: ed.innerHTML, attachments: atts.map(({ name, type, data }) => ({ name, type, data })), inReplyTo, references, answering, draft: draftId });
-  const hasContent = () => toIn.value.trim() || subIn.value.trim() || ed.textContent.replace(/^\s*--\s*[\s\S]*$/, '').trim() || atts.length;
+  const payload = () => ({ from: fromSel.value, to: to.value(), cc: cc.value(), bcc: bcc.value(), subject: subIn.value, html: ed.innerHTML, attachments: atts.map(({ name, type, data }) => ({ name, type, data })), inReplyTo: base.inReplyTo || '', references: base.references || '', answering: base.answering || '', draft: draftId });
+  const hasContent = () => to.count() || subIn.value.trim() || ed.textContent.replace(/^\s*--\s*[\s\S]*$/, '').trim() || atts.length;
   async function saveDraft() {
     if (!dirty || sending || !hasContent()) return;
     dirty = false;
@@ -605,25 +773,23 @@ function compose(o = {}) {
   const timer = setInterval(saveDraft, 8000);
   async function doSend() {
     if (sending) return;
-    if (!toIn.value.trim() && !ccIn.value.trim() && !bccIn.value.trim()) { toast('Add at least one recipient.', { bad: true }); toIn.focus(); return; }
+    const bad = [...to.invalid(), ...cc.invalid(), ...bcc.invalid()];
+    if (bad.length) { toast(`“${bad[0]}” isn’t a valid address`, { bad: true }); return; }
+    if (!to.count() && !cc.count() && !bcc.count()) { toast('Add at least one recipient.', { bad: true }); to.focus(); return; }
     if (!subIn.value.trim() && !await confirmBox('Send without a subject?', 'Messages without a subject are easy to miss.', 'Send anyway')) return;
-    sending = true; status.replaceChildren(h('span', { class: 'spin' }), ' Sending…');
-    try {
-      await api('POST', '/api/send', payload());
-      close(); toast('Message sent'); refresh();
-    } catch (e) {
-      sending = false; status.textContent = '';
-      dialog('Not sent', h('div', {}, h('p', { style: { margin: '0 0 8px' }, text: e.message }), e.data?.diagnosis ? h('p', { class: 'muted', style: { margin: 0 }, text: e.data.diagnosis }) : null), [['OK', true, 'pri']]);
-    }
+    sending = true;
+    const p = payload();
+    close();
+    queueSend(p, () => compose({ restore: p }));
   }
-  async function api_close() {
-    if (!sending && hasContent()) { dirty = true; await saveDraft(); if (draftId) toast('Saved to Drafts'); refresh(); }
+  async function closeSave() {
+    if (!sending && hasContent()) { dirty = true; await saveDraft(); if (draftId) toast('Saved to Drafts', { icon: 'draft' }); refresh(); }
     close();
   }
   function close() { clearInterval(timer); ov.remove(); openComposer.closed = true; }
-  openComposer = { closed: false, close: (save) => save ? api_close() : close(), focus: () => ed.focus() };
-  (to ? ed : toIn).focus();
-  if (to) { const r = document.createRange(); r.setStart(ed, 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); }
+  openComposer = { closed: false, close: save => save ? closeSave() : close(), focus: () => ed.focus() };
+  if (base.to) { ed.focus(); const r = document.createRange(); r.setStart(ed, 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); }
+  else to.focus();
 }
 function cleanPaste(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -671,18 +837,69 @@ async function pageDomain() {
   check();
 
   const cf = h('div', { class: 'card' });
-  const tokenUrl = 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=' + encodeURIComponent(JSON.stringify([{ key: 'dns', type: 'edit' }, { key: 'zone', type: 'read' }])) + '&name=selfmail';
+  // Cloudflare's template link opens its own "Create API token" form with the
+  // permissions already ticked; the person only clicks Continue → Create → Copy.
+  // selfmail then picks the token up by itself: from the clipboard when the tab
+  // gets focus back, or from a paste anywhere on the page.
+  const zoneGuess = st.domain.split('.').slice(-2).join('.');
+  const tokenUrl = 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=' + encodeURIComponent(JSON.stringify([{ key: 'dns', type: 'edit' }, { key: 'zone', type: 'read' }])) +
+    '&accountId=*&zoneId=all&name=' + encodeURIComponent('selfmail · ' + zoneGuess);
+  const looksLikeToken = t => /^[A-Za-z0-9_\-]{35,90}$/.test(t);
   function renderCf(s) {
     if (!s.cloudflare.connected) {
-      const tok = h('input', { type: 'password', placeholder: 'Paste your Cloudflare API token', autocomplete: 'off' });
-      const btn = h('button', { class: 'btn pri', onclick: async () => { btn.disabled = true; try { const r = await api('POST', '/api/cloudflare/connect', { token: tok.value }); toast(`Connected to ${r.zone.name}`); s.cloudflare = { connected: true, zone: r.zone.name, account: r.zone.account }; renderCf(s); } catch (e) { fail(e); btn.disabled = false; } } }, 'Connect');
-      cf.replaceChildren(h('h2', {}, icon('cloud'), 'Set up DNS automatically with Cloudflare'),
-        h('p', { class: 'sub', text: 'If your domain uses Cloudflare, selfmail can add and fix every record below for you. You’ll see exactly what changes before anything happens.' }),
-        h('ol', { class: 'muted', style: { margin: '0 0 14px', paddingLeft: '20px', lineHeight: 1.8 } },
-          h('li', {}, h('a', { href: tokenUrl, target: '_blank', rel: 'noopener' }, 'Create a Cloudflare API token'), ' — the link pre-fills the right permissions (Zone · DNS · Edit and Zone · Zone · Read).'),
-          h('li', {}, 'Under “Zone Resources”, pick the domain ', h('b', { text: st.domain.split('.').slice(-2).join('.') }), ', then create the token and copy it.'),
-          h('li', {}, 'Paste it here.')),
-        h('div', { class: 'row' }, tok, btn));
+      let waiting = false, busy = false, tried = '', popup = null;
+      const stateEl = h('div', { class: 'cf-state' });
+      const setState = (kind, text) => { stateEl.className = 'cf-state ' + kind; stateEl.replaceChildren(kind === 'busy' ? h('span', { class: 'spin' }) : h('span', { class: 'dot' }), h('span', { text })); };
+      const steps = h('ol', { class: 'cf-steps' },
+        h('li', {}, h('b', { text: 'Sign in to Cloudflare' }), h('span', { text: 'A Cloudflare window opens with the right permissions already chosen.' })),
+        h('li', {}, h('b', {}, 'Click ', h('i', { text: 'Continue to summary' }), ', then ', h('i', { text: 'Create Token' })), h('span', { text: 'It can only edit DNS — nothing else in your account.' })),
+        h('li', {}, h('b', {}, 'Click ', h('i', { text: 'Copy' }), ' and come back'), h('span', { text: 'selfmail picks the token up by itself and connects.' })));
+      const connect = async (token) => {
+        token = String(token || '').trim();
+        if (busy || !token) return;
+        busy = true; tried = token; setState('busy', 'Connecting to Cloudflare…');
+        try {
+          const r = await api('POST', '/api/cloudflare/connect', { token });
+          try { popup && !popup.closed && popup.close(); } catch { }
+          cleanup();
+          toast(`Connected to ${r.zone.name}`, { icon: 'check' });
+          s.cloudflare = { connected: true, zone: r.zone.name, account: r.zone.account, fresh: true }; renderCf(s);
+        } catch (e) { busy = false; setState('bad', e.message); }
+      };
+      const sniff = async () => {
+        if (!waiting || busy || !navigator.clipboard?.readText || !window.isSecureContext) return;
+        try { const t = (await navigator.clipboard.readText()).trim(); if (looksLikeToken(t) && t !== tried) connect(t); } catch { }
+      };
+      const onPaste = e => {
+        if (!document.body.contains(cf)) return cleanup();
+        const t = (e.clipboardData?.getData('text') || '').trim();
+        if (looksLikeToken(t) && !e.target.closest?.('.compose')) { e.preventDefault(); manual.value = t; connect(t); }
+      };
+      const onFocus = () => { if (!document.body.contains(cf)) return cleanup(); setTimeout(sniff, 150); };
+      const cleanup = () => { window.removeEventListener('focus', onFocus); document.removeEventListener('paste', onPaste); };
+      window.addEventListener('focus', onFocus); document.addEventListener('paste', onPaste);
+
+      const start = () => {
+        const w = 1060, ht = 860, x = Math.max(0, (screen.availWidth - w) / 2), y = Math.max(0, (screen.availHeight - ht) / 2);
+        popup = window.open(tokenUrl, 'selfmail-cloudflare', `popup,width=${w},height=${ht},left=${x},top=${y}`);
+        if (!popup) location.assign(tokenUrl);
+        waiting = true; cf.classList.add('waiting');
+        setState('wait', window.isSecureContext && navigator.clipboard?.readText ? 'Waiting for your token — copy it in Cloudflare and come back here' : 'Waiting for your token — copy it in Cloudflare, come back and press ' + (MAC ? '⌘' : 'Ctrl') + '+V');
+      };
+      const manual = h('input', { type: 'password', placeholder: 'Paste a Cloudflare API token', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter') connect(manual.value); } });
+      const pasteBtn = window.isSecureContext && navigator.clipboard?.readText ? h('button', { class: 'btn', onclick: async () => { try { const t = (await navigator.clipboard.readText()).trim(); if (!t) return toast('The clipboard is empty', { bad: true }); manual.value = t; connect(t); } catch { toast('The browser didn’t allow reading the clipboard — paste it into the box instead', { bad: true }); manual.focus(); } } }, icon('copy'), 'Paste from clipboard') : null;
+      cf.className = 'card cf-card';
+      cf.replaceChildren(
+        h('div', { class: 'cf-hero' },
+          h('div', { class: 'cf-logo', html: '<svg viewBox="0 0 64 32"><path fill="#fff" d="M43.6 22.4l.5-1.7c.6-2 .4-3.8-.6-5.1-.9-1.2-2.3-1.9-4.1-2l-17.4-.2c-.1 0-.2-.1-.3-.1-.1-.1-.1-.2 0-.3.1-.2.2-.3.4-.3l17.6-.2c2.1-.1 4.3-1.8 5.1-3.8l1-2.6c0-.1.1-.2 0-.3C44.6 2.5 40.4 0 35.6 0c-5.5 0-10.2 3.6-11.9 8.5-1.1-.8-2.5-1.3-4-1.1-2.6.3-4.7 2.4-5 5-.1.7 0 1.3.1 2C10.5 14.5 7 18.1 7 22.5c0 .4 0 .8.1 1.2 0 .2.2.3.3.3h35.5c.2 0 .4-.1.4-.3z"/><path fill="#fff" opacity=".75" d="M50.1 10.2h-.5c-.1 0-.2.1-.3.2l-.8 2.6c-.6 2-.4 3.8.6 5.1.9 1.2 2.3 1.9 4.1 2l3.7.2c.1 0 .2.1.3.1.1.1.1.2 0 .3-.1.2-.2.3-.4.3l-3.8.2c-2.1.1-4.3 1.8-5.1 3.8l-.3.7c-.1.1 0 .3.2.3h13c.2 0 .3-.1.3-.2.2-.8.3-1.7.3-2.6 0-5.1-4.2-9.3-9.3-9.3"/></svg>' }),
+          h('div', { class: 'grow' },
+            h('h2', { text: 'Set up DNS automatically with Cloudflare' }),
+            h('p', { class: 'sub', text: `If ${zoneGuess} uses Cloudflare, selfmail adds and fixes every record below for you. You’ll see exactly what changes before anything happens.` })),
+          h('button', { class: 'btn cf-go', onclick: start }, 'Connect Cloudflare', icon('arrow'))),
+        steps, stateEl,
+        h('details', { class: 'cf-manual' }, h('summary', { text: 'Already have a token? Paste it yourself' }),
+          h('div', { class: 'row' }, manual, pasteBtn, h('button', { class: 'btn pri', onclick: () => connect(manual.value) }, 'Connect')),
+          h('p', { class: 'muted small' }, 'It needs ', h('b', { text: 'Zone · DNS · Edit' }), ' and ', h('b', { text: 'Zone · Zone · Read' }), ' for ', h('b', { text: zoneGuess }), '. ', h('a', { href: tokenUrl, target: '_blank', rel: 'noopener' }, 'Open the pre-filled form'))));
       return;
     }
     const planBox = h('div', { class: 'ops' });
@@ -693,7 +910,9 @@ async function pageDomain() {
     } }, 'Apply these changes');
     const showOps = (ops, done) => {
       const todo = ops.filter(o => !['ok', 'keep'].includes(o.action));
-      applyBtn.classList.toggle('hide', done || !todo.some(o => o.action !== 'skip'));
+      const n = todo.filter(o => o.action !== 'skip').length;
+      applyBtn.classList.toggle('hide', done || !n);
+      applyBtn.replaceChildren(icon('sparkle'), n === 1 ? 'Apply 1 change' : `Apply all ${n} changes`);
       planBox.replaceChildren(...(todo.length ? todo : [{ action: 'ok', type: '', name: 'Everything already matches.', content: '' }]).map(o => h('div', { class: 'op' },
         h('span', { class: 'chip ' + ({ create: 'ok', update: 'acc', delete: 'bad', skip: 'warn', ok: 'ok' }[o.action] || '') }, done ? (o.done ? '✓ ' : '✗ ') + o.action : o.action),
         h('b', { class: 'typ', text: o.type }),
@@ -701,7 +920,10 @@ async function pageDomain() {
     };
     const preview = async () => { planBox.replaceChildren(h('span', { class: 'spin' })); try { showOps((await api('GET', '/api/cloudflare/plan')).ops, false); } catch (e) { planBox.replaceChildren(); fail(e); } };
     const auto = h('input', { type: 'checkbox', checked: s.autoIp, onchange: async e => { try { await api('POST', '/api/settings', { autoIp: e.target.checked }); toast(e.target.checked ? 'DNS will follow your IP' : 'Automatic IP updates off'); } catch (x) { fail(x); e.target.checked = !e.target.checked; } } });
+    cf.className = 'card';
+    const fresh = s.cloudflare.fresh; s.cloudflare.fresh = false;
     cf.replaceChildren(h('h2', {}, icon('cloud'), 'Cloudflare', h('span', { class: 'chip ok', text: `Connected · ${s.cloudflare.zone}` })),
+      fresh ? h('div', { class: 'cf-done' }, icon('check'), h('div', {}, h('b', { text: 'Cloudflare is linked.' }), h('span', { text: ' Here’s everything selfmail will set up — one click and you’re done.' }))) : null,
       h('p', { class: 'sub', text: 'Preview what needs to change, then apply. Only mail records are touched; nothing else in your zone is changed.' }),
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: preview }, icon('search'), 'Preview changes'), applyBtn, h('span', { class: 'grow' }),
         h('button', { class: 'btn ghost danger', onclick: async () => { if (await confirmBox('Disconnect Cloudflare?', 'selfmail will forget the token. Your DNS records stay as they are.', 'Disconnect', true)) { await api('POST', '/api/cloudflare/disconnect').catch(fail); s.cloudflare.connected = false; renderCf(s); } } }, 'Disconnect')),
@@ -754,7 +976,13 @@ async function pageStatus() {
   const showLog = () => { const f = filt.value.trim().toLowerCase(); logPre.textContent = f ? logText.split('\n').filter(l => l.toLowerCase().includes(f)).join('\n') : logText; logPre.scrollTop = logPre.scrollHeight; };
   const loadLog = async () => { logText = await api('GET', '/api/log?n=400').catch(e => e.message); showLog(); };
   filt.addEventListener('input', showLog); loadLog();
-  $('#page').replaceChildren(pageShell('Server status', 'Everything that has to work for mail to flow, checked live.',
+  const states = tiles.filter(Boolean).map(t => $('.dot', t)?.className || '');
+  const bad = states.filter(c => /\bbad\b/.test(c)).length, warn = states.filter(c => /\bwarn\b/.test(c)).length;
+  const hc = bad ? 'var(--bad)' : warn ? 'var(--warn)' : 'var(--ok)';
+  const hero = h('div', { class: 'hero', style: { '--hc': hc } }, h('div', { class: 'ring' }, icon(bad ? 'x' : warn ? 'spam' : 'check')),
+    h('div', {}, h('h2', { text: bad ? `${bad} thing${bad > 1 ? 's' : ''} need${bad > 1 ? '' : 's'} attention` : warn ? 'Mail is flowing — with a few warnings' : 'All systems operational' }),
+      h('p', { text: bad ? 'Details below, with what to do about each one.' : warn ? 'Everything works; the yellow items can hurt delivery to some providers.' : 'Mail is flowing in and out normally.' })));
+  $('#page').replaceChildren(pageShell('Server status', 'Everything that has to work for mail to flow, checked live.', hero,
     h('div', { class: 'card' }, h('h2', {}, 'Health', h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: () => showPage('status') }, icon('refresh'), 'Check again')), h('div', { class: 'kv', style: { marginTop: '12px' } }, tiles.filter(Boolean))),
     h('div', { class: 'card' }, h('h2', {}, icon('shield'), 'Blocklists'), h('p', { class: 'sub', text: 'Mail providers refuse or junk mail from addresses on these lists. Spamhaus is asked through its own servers, because it refuses public DNS.' }), bl),
     h('div', { class: 'card' }, h('h2', {}, 'Outgoing queue', h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: async () => { await api('POST', '/api/queue', { action: 'flush' }).then(() => toast('Retrying now')).catch(fail); setTimeout(async () => renderQueue(await api('GET', '/api/queue')), 1500); } }, 'Retry all now')), h('p', { class: 'sub', text: 'Messages the server is still trying to deliver.' }), qbody),
@@ -807,8 +1035,6 @@ async function pageSettings() {
   api('GET', '/api/account/sessions').then(list => sess.replaceChildren(h('div', { style: { marginBottom: '8px' } }, `${list.length} signed-in ${list.length === 1 ? 'device' : 'devices'}:`),
     ...list.map(x => h('div', { style: { fontSize: '12.5px', padding: '4px 0' } }, x.current ? h('b', { text: 'This device — ' }) : null, `${x.ua.replace(/\(.*?\)/g, '').slice(0, 70) || 'unknown'} · ${x.ip} · last seen ${fmtWhen(x.seen)}`)))).catch(() => {});
   const notifOn = localStorage.getItem('sm-notify') === '1' && 'Notification' in window && Notification.permission === 'granted';
-  const themeSel = h('select', {}, [['auto', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, t]) => h('option', { value: v, text: t }))); themeSel.value = theme();
-  themeSel.addEventListener('change', () => { localStorage.setItem('sm-theme', themeSel.value); applyTheme(); renderNav(); });
 
   $('#page').replaceChildren(pageShell('Settings', `Signed in as ${S.me.user} · ${S.me.address} · selfmail ${S.me.version}`,
     h('div', { class: 'card' }, h('h2', { text: 'Your name & signature' }), h('div', { class: 'form' }, field('Display name', nameIn, 'Shown as the sender name on mail you send.'), field('Signature', sigIn),
@@ -832,11 +1058,18 @@ async function pageSettings() {
       sess, h('div', {}, h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/account/signout-others').catch(fail); toast('Other devices signed out'); showPage('settings'); } }, 'Sign out other devices')))),
     h('div', { class: 'card' }, h('h2', {}, icon('shield'), 'Responsible use'), s.agreement ? h('p', { class: 'sub', text: `Signed by ${s.agreement.name} on ${fmtFull(s.agreement.at)}${s.agreement.isp ? ` (internet provider: ${s.agreement.isp})` : ''}.` }) : null,
       h('div', {}, h('button', { class: 'btn', onclick: async () => { const a = await api('GET', '/api/agreement'); dialog('Responsible-use agreement', h('div', { class: 'agree-read' }, ispBadge(a.isp), termsList(a.terms)), [['Close', true, 'pri']]); } }, 'Read the agreement'))),
-    h('div', { class: 'card' }, h('h2', { text: 'This browser' }), h('div', { class: 'form' }, h('div', { class: 'grid2' }, field('Appearance', themeSel),
-      h('label', { class: 'f' }, 'New-mail notifications', h('div', {}, h('button', { class: 'btn', onclick: async e => {
-        if (!('Notification' in window)) return toast('This browser can’t show notifications', { bad: true });
-        const p = await Notification.requestPermission(); if (p === 'granted') { localStorage.setItem('sm-notify', '1'); toast('You’ll get a notification when mail arrives'); e.target.textContent = 'Notifications on'; } else toast('Notifications were blocked in the browser', { bad: true });
-      } }, notifOn ? 'Notifications on' : 'Turn on notifications')))))),
+    h('div', { class: 'card' }, h('h2', {}, icon('palette'), 'Appearance'), h('p', { class: 'sub', text: 'Saved in this browser.' }),
+      h('div', { class: 'form' },
+        h('div', { class: 'f' }, 'Theme', segPick([['auto', 'Match device'], ['light', 'Light'], ['dark', 'Dark']], theme(), v => { localStorage.setItem('sm-theme', v); applyTheme(); renderNav(); })),
+        h('div', { class: 'f' }, 'Accent', h('div', { class: 'swatches' }, Object.entries(ACCENTS).map(([k, c]) => h('button', { class: 'swatch' + ((localStorage.getItem('sm-accent') || 'violet') === k ? ' on' : ''), title: k[0].toUpperCase() + k.slice(1), style: { background: `linear-gradient(135deg,${c[0]},${c[1]} 55%,${c[2]})` },
+          onclick: e => { localStorage.setItem('sm-accent', k); applyTheme(); $$('.swatch').forEach(x => x.classList.remove('on')); e.currentTarget.classList.add('on'); } })))),
+        h('div', { class: 'f' }, 'Message list', segPick([['comfortable', 'Comfortable'], ['compact', 'Compact']], localStorage.getItem('sm-density') || 'comfortable', v => { localStorage.setItem('sm-density', v); applyTheme(); })),
+        h('label', { class: 'row check' }, h('input', { type: 'checkbox', checked: localStorage.getItem('sm-logos') !== '0', onchange: e => { localStorage.setItem('sm-logos', e.target.checked ? '1' : '0'); toast(e.target.checked ? 'Sender logos on' : 'Sender logos off — initials only'); } }),
+          h('span', {}, h('b', { text: 'Show sender logos' }), h('div', { class: 'muted', style: { fontSize: '12.5px' } }, 'Your server fetches each company’s logo once and keeps it — your browser never contacts anyone else.'))),
+        h('div', { class: 'f' }, 'New-mail notifications', h('div', {}, h('button', { class: 'btn', onclick: async e => {
+          if (!('Notification' in window)) return toast('This browser can’t show notifications', { bad: true });
+          const p = await Notification.requestPermission(); if (p === 'granted') { localStorage.setItem('sm-notify', '1'); toast('You’ll get a notification when mail arrives', { icon: 'unread' }); e.target.textContent = 'Notifications on'; } else toast('Notifications were blocked in the browser', { bad: true });
+        } }, notifOn ? 'Notifications on' : 'Turn on notifications'))))),
   ));
 }
 
@@ -855,17 +1088,91 @@ function route() {
   S.listed = true;
   S.folder = folder; S.alias = alias;
   renderNav();
-  if (changed) { S.sel.clear(); S.items = []; renderList(); loadList(); }
+  if (changed) { S.sel.clear(); S.items = []; S.animateNext = true; renderList(); loadList(); }
   if (id) { if (id !== S.open) openMsg(id, true); }
   else { S.open = null; S.msg = null; $('#shell').classList.remove('reading'); $$('.mrow.on').forEach(r => r.classList.remove('on')); renderEmptyReader(); }
 }
 addEventListener('popstate', () => S.me && route());
 addEventListener('hashchange', () => S.me && route());
 
+function segPick(opts, val, fn) {
+  const seg = h('div', { class: 'seg' }, opts.map(([v, t]) => h('button', { 'data-v': v, class: v === val ? 'on' : '', onclick: () => { $$('button', seg).forEach(b => b.classList.toggle('on', b.dataset.v === v)); fn(v); } }, t)));
+  return h('div', {}, seg);
+}
+
+// ===================================================== command palette ====
+function palette() {
+  if ($('.palette')) return;
+  closeMenu();
+  const inp = h('input', { type: 'text', placeholder: 'Search mail, jump anywhere, or run a command…', 'aria-label': 'Command' });
+  const res = h('div', { class: 'res' });
+  let items = [], idx = 0, seq = 0;
+  const ov = h('div', { class: 'palette', onclick: e => { if (e.target === ov) close(); } },
+    h('div', { class: 'box' }, h('div', { class: 'pin' }, icon('search'), inp, kbd('Esc')), res,
+      h('div', { class: 'foot' }, h('span', {}, kbd('↑'), ' ', kbd('↓'), ' move'), h('span', {}, kbd('Enter'), ' open'), h('span', { class: 'grow' }), h('span', {}, 'Try from:, to:, subject: or has:attachment'))));
+  const close = () => ov.remove();
+  const go = hsh => { close(); location.hash = hsh; };
+  const commands = () => [
+    { sec: 'Actions', ic: 'pen', t: 'Write a message', k: 'c', run: () => { close(); compose(); } },
+    { sec: 'Actions', ic: document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', t: 'Switch light / dark', run: () => { toggleTheme(); close(); } },
+    { sec: 'Actions', ic: 'refresh', t: 'Refresh mail', run: () => { close(); refresh(); } },
+    { sec: 'Actions', ic: 'keyboard', t: 'Keyboard shortcuts', k: '?', run: () => { close(); shortcuts(); } },
+    ...['inbox', 'starred', 'sent', 'drafts', 'archive', 'spam', 'trash', 'all'].map(f => ({ sec: 'Go to', ic: FOLDER_ICON[f] || 'all', t: S.folders.find(x => x.id === f)?.name || 'All mail', run: () => go('#/f/' + f) })),
+    { sec: 'Go to', ic: 'globe', t: 'Domain & DNS', run: () => go('#/domain') },
+    { sec: 'Go to', ic: 'pulse', t: 'Server status', run: () => go('#/status') },
+    { sec: 'Go to', ic: 'gear', t: 'Settings', run: () => go('#/settings') },
+    ...S.aliases.map(a => ({ sec: 'Addresses', ic: 'at', t: a.address, sub: a.unread ? `${a.unread} unread` : `${a.total} messages`, run: () => go('#/a/' + encodeURIComponent(a.address)) })),
+  ];
+  function draw(list) {
+    items = list; idx = Math.min(idx, Math.max(0, items.length - 1));
+    if (!items.length) return res.replaceChildren(h('div', { class: 'hint', text: 'Nothing found' }));
+    const out = []; let sec = '';
+    items.forEach((x, i) => {
+      if (x.sec !== sec) { out.push(h('h6', { text: x.sec })); sec = x.sec; }
+      out.push(h('button', { class: 'it' + (i === idx ? ' on' : ''), onmouseenter: () => { idx = i; paint(); }, onclick: () => x.run() },
+        x.msg ? avatar(x.msg.from) : icon(x.ic),
+        h('div', { class: 'grow' }, h('b', { text: x.t }), x.sub ? h('small', { text: x.sub }) : null),
+        x.k ? kbd(x.k) : null));
+    });
+    res.replaceChildren(...out);
+  }
+  function paint() { $$('.it', res).forEach((b, i) => b.classList.toggle('on', i === idx)); $$('.it', res)[idx]?.scrollIntoView({ block: 'nearest' }); }
+  async function update() {
+    const q = inp.value.trim(), ql = q.toLowerCase(), my = ++seq;
+    let list = commands().filter(x => !ql || x.t.toLowerCase().includes(ql) || x.sec.toLowerCase().includes(ql));
+    if (!ql) list = list.filter(x => x.sec !== 'Addresses');
+    idx = 0; draw(list.slice(0, 40));
+    if (q.length >= 2) {
+      const r = await api('GET', '/api/messages?' + new URLSearchParams({ folder: 'all', q, limit: 8 })).catch(() => ({ items: [] }));
+      if (my !== seq) return;
+      const msgs = r.items.map(m => ({ sec: 'Messages', msg: m, t: m.subject || '(no subject)', sub: `${nameOf(m.from)} · ${fmtWhen(m.date)}`, run: () => { close(); S.alias = ''; location.hash = `#/f/${m.folder}/${encodeURIComponent(m.id)}`; } }));
+      draw([...msgs, ...list.slice(0, 30)]);
+    }
+  }
+  inp.addEventListener('input', debounce(update, 120));
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { idx = (idx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; paint(); } }
+    else if (e.key === 'Enter') { e.preventDefault(); items[idx]?.run(); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  document.body.append(ov); update(); inp.focus();
+}
+function shortcuts() {
+  const k = (keys, t) => h('div', {}, h('span', { text: t }), h('span', {}, ...keys.flatMap((x, i) => [i ? ' ' : '', kbd(x)])));
+  dialog('Keyboard shortcuts', h('div', { class: 'keys' },
+    k([MAC ? '⌘' : 'Ctrl', 'K'], 'Search & commands'), k(['c'], 'Write a message'), k(['j'], 'Next message'), k(['k'], 'Previous message'),
+    k(['r'], 'Reply'), k(['a'], 'Reply all'), k(['f'], 'Forward'), k(['e'], 'Archive'), k(['#'], 'Delete'), k(['s'], 'Star'),
+    k(['u'], 'Back to the list'), k(['/'], 'Search this folder'), k([MAC ? '⌘' : 'Ctrl', 'Enter'], 'Send'), k(['?'], 'This list')), [['Got it', true, 'pri']]);
+}
+
 // ========================================================== keyboard ====
 document.addEventListener('keydown', e => {
-  if (!S.me || S.view !== 'mail' || e.ctrlKey || e.metaKey || e.altKey) return;
-  if ((openComposer && !openComposer.closed) || $('.dialog') || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+  if (!S.me) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.target.closest?.('.composer')) { e.preventDefault(); palette(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if ((openComposer && !openComposer.closed) || $('.dialog') || $('.palette') || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+  if (e.key === '?') { e.preventDefault(); shortcuts(); return; }
+  if (S.view !== 'mail') return;
   const i = S.items.findIndex(x => x.id === S.open);
   const k = e.key;
   if (k === 'j' || k === 'ArrowDown') { const n = S.items[i + 1] || S.items[0]; if (n) openMsg(n.id); }

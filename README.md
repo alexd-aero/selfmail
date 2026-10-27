@@ -14,19 +14,23 @@ sudo ./setup.sh
 
 ## What you get
 
-**A real mail client**
-- Inbox, Starred, Sent, Drafts, Archive, Spam and Trash; read/unread, stars, bulk actions with undo
+**A real mail client that's nice to use**
+- Inbox, Starred, Sent, Drafts, Archive, Spam and Trash, grouped by day (Today, Yesterday, This week…), with company logos next to each sender and quick archive / delete / read / star buttons on hover
+- **Command palette** (`Ctrl`/`⌘` + `K`): jump to any folder, address or page, or search every message from one box. Press `?` for all keyboard shortcuts (`j`/`k`, `c`, `r`, `e`, `#`, `/`)
+- **Undo send**: every message waits 5 seconds with an Undo button before it goes out
+- Recipients become chips with suggestions from the people you write to most; drag files anywhere onto the composer to attach them; quick reply right under the message
+- A "Verified sender" badge when SPF/DKIM/DMARC pass, so lookalike senders stand out
 - Mail shows exactly as the sender designed it, in a locked-down frame: links open in a new tab, scripts never run, and pictures from the internet stay hidden until you allow them (they can reveal that you opened a message)
 - Every language and symbol displays correctly — emoji, accents, curly quotes, Japanese, Cyrillic — whatever character set the sender used. Plain-text mail with tables or text art switches to a fixed-width font so the columns line up
-- Attachments in and out, inline images, drafts that save themselves, reply / reply all / forward
+- Attachments in and out (with image previews), inline images, drafts that save themselves, reply / reply all / forward
 - **Catch-all addresses**: anything@yourdomain arrives in your mailbox, and the sidebar groups mail by the address it was sent to — handy for giving every website its own address. You can also send *from* any of them
 - New mail appears instantly (no refreshing), with optional desktop notifications
-- Search with `from:`, `to:`, `subject:` and `has:attachment`; keyboard shortcuts (`j`/`k`, `c`, `r`, `e`, `#`, `/`)
-- Light and dark mode; works on phones
+- Search with `from:`, `to:`, `subject:` and `has:attachment`
+- Light and dark mode, six accent colours, comfortable or compact lists; works on phones
 
 **Setup and health, in plain language**
 - **Domain & DNS** lists every record you need with copy buttons, and checks each one against public DNS
-- **Connect Cloudflare** with an API token and selfmail adds or fixes all the records for you. It shows exactly what will change first, merges into an SPF record you already have instead of replacing it, keeps your own DMARC policy, and never touches unrelated records. Optionally it keeps the records updated when your home IP changes
+- **Connect Cloudflare** in a few clicks: selfmail opens Cloudflare’s own token page with the right permissions already filled in (DNS edit only), you click *Create* and *Copy*, and selfmail picks the token up by itself when you come back — no pasting needed (you still can, if you prefer). Then one click adds or fixes all the records. It shows exactly what will change first, merges into an SPF record you already have instead of replacing it, keeps your own DMARC policy, and never touches unrelated records. Optionally it keeps the records updated when your home IP changes
 - **Server status**: Postfix, OpenDKIM, the incoming-mail path, public IP, reverse DNS, outgoing port 25, disk space, the outgoing queue (retry or delete), the mail log, and **blocklists** — including Spamhaus, queried the way that actually works (Spamhaus refuses public DNS resolvers, which is why most checkers show it as clean)
 - **Your server sends its own mail** (directly to Gmail, Outlook and so on). A relay service is optional — as a backup or for everything — with automatic port fallbacks (see [Sending and ports](#sending-and-ports))
 
@@ -103,6 +107,7 @@ sudo selfmail uninstall    # remove the app (asks before touching your mail)
 - **Every state-changing request** must carry a custom header that browsers won’t send cross-site, so other websites can’t act on your behalf.
 - **The web mail listens only on this machine and your private networks** (LAN, Tailscale…), never on a public IPv6 address. To use it away from home, put it behind a VPN or an authenticating proxy.
 - **Mail is shown in a sandboxed frame** with its own Content-Security-Policy: no scripts, no forms, no remote content until you allow it, and dangerous markup is stripped as a second layer.
+- **Sender logos** are fetched by your server (from Google’s public favicon service, by company domain only — never for gmail.com-style personal addresses) and cached, so your browser never contacts anyone else. Turn them off in **Settings → Appearance**.
 - **The app runs as `vmail`**, not root. It can run exactly one program as root — `bin/selfmail-root` — which accepts a short list of operations (read the mail log, manage the queue, set the relay, restart Postfix/OpenDKIM/the tunnel) and validates every argument.
 - **The incoming webhook** is authorised by a secret in its URL. That URL appears in a public TXT record, so anyone who reads your DNS could post junk into your inbox (never read or send). If that matters, set a webhook signing key from your Forward Email account in the config (`webhookKey`) and selfmail will verify each delivery’s signature. You can also generate a new secret address in **Settings → Receiving** at any time.
 
