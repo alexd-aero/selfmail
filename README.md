@@ -28,7 +28,7 @@ sudo ./setup.sh
 - **Domain & DNS** lists every record you need with copy buttons, and checks each one against public DNS
 - **Connect Cloudflare** with an API token and selfmail adds or fixes all the records for you. It shows exactly what will change first, merges into an SPF record you already have instead of replacing it, keeps your own DMARC policy, and never touches unrelated records. Optionally it keeps the records updated when your home IP changes
 - **Server status**: Postfix, OpenDKIM, the incoming-mail path, public IP, reverse DNS, outgoing port 25, disk space, the outgoing queue (retry or delete), the mail log, and **blocklists** — including Spamhaus, queried the way that actually works (Spamhaus refuses public DNS resolvers, which is why most checkers show it as clean)
-- **Sending through a relay** (Brevo, SMTP2GO, Mailgun, Amazon SES…) with one form, for when your home IP is distrusted or port 25 is blocked
+- **Your server sends its own mail** (directly to Gmail, Outlook and so on). A relay service is optional — as a backup or for everything — with automatic port fallbacks (see [Sending and ports](#sending-and-ports))
 
 ![Domain & DNS](docs/domain.png)
 
@@ -42,6 +42,24 @@ MX records carry no port number, so every mail server in the world delivers to p
 | **direct** | This server receives on port 25 itself | Yes |
 
 In relay mode the installer can create a **Cloudflare Tunnel** so the relay can reach your machine without any port forwarding. Only the mail drop-off path (`/inbound/…`) is reachable through it — the web mail is never exposed on the tunnel, and the app itself refuses every other path on that host name too.
+
+## Sending and ports
+
+By default **your server delivers every message itself**. Mail servers only accept mail from each other on **port 25** — Gmail and Outlook don't take incoming server-to-server mail on any other port — so that's the port direct sending uses.
+
+The other mail ports, **587** (STARTTLS), **465** (TLS) and **2525** (STARTTLS, for networks that block 587), are *submission* ports: they're how you hand mail to a relay service that then delivers it. selfmail uses them only if you add a relay in **Settings → Sending**:
+
+| Setting | What happens |
+|---|---|
+| **Directly** (default) | Your server delivers everything itself on port 25. |
+| **Directly, relay as backup** | Your server still delivers itself. Postfix hands a message to the relay only if the recipient's server can't be reached — and if your provider blocks port 25 entirely, selfmail notices and sends everything through the relay until it opens again. |
+| **Always through a relay** | Everything goes through the relay. |
+
+With the port on **Automatic**, selfmail tries **587 → 465 → 2525 → 25** and uses the first that answers with a real SMTP greeting. A watchdog re-checks every 5 minutes and moves to the next port if the current one stops answering, so a blocked port never leaves mail stuck. **Test ports** in Settings shows which ports your relay answers on from your network; every automatic change is listed there too.
+
+## Responsible use
+
+Before the web mail can be used, the person running the server signs a short **responsible-use agreement** — in the installer (or with `--agree "Full Name"`) or on first sign-in. It names *their own* internet provider (detected from the connection, with its logo): they're responsible for the server and for following that provider's terms, abuse can lead to conflicts with that provider, and selfmail's authors aren't liable. The signature (name, time, IP, provider) is stored in `/etc/selfmail/config.json` and shown under **Settings → Responsible use**. This is a plain-language agreement, not legal advice.
 
 ## Install
 
@@ -58,7 +76,7 @@ Requirements: a Linux machine with systemd (Debian, Ubuntu, Raspberry Pi OS, Fed
 Non-interactive install (for scripts):
 
 ```bash
-sudo ./setup.sh --yes --domain mail.example.com --host mx.example.com --mailbox me \
+sudo ./setup.sh --yes --agree "Your Full Name" --domain mail.example.com --host mx.example.com --mailbox me \
      --mode relay --tunnel-host mailhook.example.com --user me --password 'a long password'
 ```
 
@@ -96,7 +114,7 @@ SPF, DKIM and DMARC are easy and selfmail sets them up. What a home connection c
 - **Reverse DNS** for a home IP belongs to your ISP and won’t point back to your mail host, which costs some spam score at Gmail.
 - **CSS / XBL listings** mean spam or proxy traffic came from your IP (often a proxy/“bandwidth sharing” app or malware on the same network). Remove the cause before asking for removal.
 
-The reliable fix for all three is **sending through a relay** (Settings → Sending): your mail leaves from the relay’s trusted servers while you still receive at home. Free tiers (Brevo, SMTP2GO) are plenty for personal mail.
+If those hurt your delivery, **Settings → Sending** can hand mail to a relay service instead (free tiers such as Brevo or SMTP2GO are plenty for personal mail) — as a backup only, or for everything. Your server keeps receiving at home either way.
 
 ## Troubleshooting
 
@@ -114,7 +132,8 @@ The app is plain Node.js with two dependencies (`mailparser`, `nodemailer`) and 
 
 ```
 app/server.js        HTTP routes, sessions, webhook
-app/lib/             config, auth, maildir, index (store), mime, send, dns, cloudflare, status, events
+app/lib/             config, auth, maildir, store, mime, send, outbound (ports/fallbacks), dns, cloudflare,
+                     status, isp, agreement, events
 app/public/          index.html, app.css, app.js
 bin/selfmail         CLI            bin/selfmail-root   the root helper
 setup.sh  doctor.sh  uninstall.sh

@@ -22,7 +22,8 @@ const DEFAULTS = {
   webhookUrl: '',          // public base URL that reaches /inbound, e.g. https://mailhook.example.com
   inboundSecret: '',
   webhookHosts: [],        // host names that may ONLY reach /inbound (the public tunnel)
-  outbound: { mode: 'direct', host: '', port: 587, user: '' },   // the relay password lives in Postfix's sasl_passwd only
+  outbound: { mode: 'direct', host: '', port: 'auto', using: 0, user: '', spfInclude: '', active: 'direct', notes: [] },   // mode direct|auto|relay; the relay password lives in Postfix's sasl_passwd only
+  agreement: null,         // { version, name, at, ip, isp, ... } once the responsible-use agreement is signed
   dmarcPolicy: 'none',
   dmarcRua: '',
   port: 8088,

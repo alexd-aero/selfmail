@@ -7,6 +7,7 @@ const { Resolver } = dnsP;
 const cfg = require('./config');
 const { run, root, isIPv4 } = require('./util');
 const send = require('./send');
+const outbound = require('./outbound');
 
 async function publicIp() {
   for (const u of ['https://api.ipify.org', 'https://ipv4.icanhazip.com']) {
@@ -58,7 +59,7 @@ async function overview() {
     unit('postfix'), unit('opendkim'), c.mode === 'relay' ? unit(c.tunnelUnit || 'selfmail-tunnel') : Promise.resolve('n/a'),
     send.probe(8000), publicIp(), queue(), webhook(c),
   ]);
-  const [ptr, out25] = await Promise.all([reverse(ip), c.outbound?.mode === 'relay' ? Promise.resolve(null) : tcp('gmail-smtp-in.l.google.com', 25)]);
+  const [ptr, out25] = await Promise.all([reverse(ip), c.outbound?.active === 'relay' ? Promise.resolve(null) : outbound.direct25()]);
   let disk = null;
   try { const s = fs.statfsSync(c.mailroot); disk = { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; } catch (e) { /* old node */ }
   return {

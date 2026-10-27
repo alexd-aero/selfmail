@@ -17,6 +17,9 @@ const dns = require('./lib/dns');
 const cloudflare = require('./lib/cloudflare');
 const status = require('./lib/status');
 const events = require('./lib/events');
+const outbound = require('./lib/outbound');
+const isp = require('./lib/isp');
+const agreement = require('./lib/agreement');
 const { root, token, safeEqual, isDomain, isEmail, isIPv4 } = require('./lib/util');
 
 const VERSION = require('./package.json').version;
@@ -117,6 +120,7 @@ route('GET', '/api/state', async (req, res, p, s) => {
   json(res, 200, {
     user: s.user, version: VERSION, address: cfg.address(c), domain: c.domain, mailbox: c.mailbox, fromName: c.fromName, signature: c.signature,
     mode: c.mode, configured: !!(c.domain && c.mxhost), cloudflare: !!c.cloudflare.token,
+    agreement: !!(c.agreement && c.agreement.version >= agreement.VERSION),
   });
 });
 
@@ -202,11 +206,30 @@ route('POST', '/api/drafts', async (req, res) => {
   json(res, 200, { ok: true, id: w.id });
 });
 
+// -------------------------------------------------------------- agreement --
+route('GET', '/api/agreement', async (req, res) => {
+  const i = await isp.detect().catch(() => ({ name: 'your internet provider' }));
+  const c = cfg.load();
+  json(res, 200, { version: agreement.VERSION, terms: agreement.terms(i.name || 'your internet provider'), isp: { name: i.name, network: i.network, asn: i.asn, ip: i.ip, logo: i.logo, domain: i.domain }, signed: c.agreement || null });
+});
+route('POST', '/api/agreement', async (req, res, p, s) => {
+  const b = await body(req, 10e3);
+  const name = String(b.name || '').trim().replace(/\s+/g, ' ');
+  if (b.agree !== true) fail(400, 'Tick the box to agree.');
+  if (name.length < 3 || name.length > 100 || !/\p{L}/u.test(name)) fail(400, 'Type your full name to sign.');
+  const i = await isp.detect().catch(() => ({}));
+  const rec = { version: agreement.VERSION, name, at: Date.now(), user: s.user, ip: i.ip || '', isp: i.name || '', from: auth.clientIp(req), via: 'web' };
+  cfg.update(c => { c.agreement = rec; });
+  console.log(`agreement v${rec.version} signed by "${name}" (${s.user})`);
+  json(res, 200, { ok: true, signed: rec });
+});
+
 // --------------------------------------------------------------- settings --
 const publicSettings = c => ({
   domain: c.domain, mxhost: c.mxhost, mailbox: c.mailbox, selector: c.selector, fromName: c.fromName, signature: c.signature,
   publicIp: c.publicIp, autoIp: c.autoIp, mode: c.mode, webhookUrl: c.webhookUrl, webhookEndpoint: cfg.webhookEndpoint(c), hasWebhookKey: !!c.webhookKey,
-  outbound: { mode: c.outbound.mode, host: c.outbound.host, port: c.outbound.port, user: c.outbound.user, spfInclude: c.outbound.spfInclude || '' },
+  outbound: { mode: c.outbound.mode, host: c.outbound.host, port: c.outbound.port, using: c.outbound.using || 0, active: c.outbound.active || 'direct', user: c.outbound.user, spfInclude: c.outbound.spfInclude || '', notes: c.outbound.notes || [], checked: c.outbound.checked || 0, probes: c.outbound.probes || [] },
+  agreement: c.agreement || null,
   dmarcPolicy: c.dmarcPolicy, dmarcRua: c.dmarcRua, tunnelUnit: c.tunnelUnit || 'selfmail-tunnel', listen: c.listen, port: c.port,
   cloudflare: { connected: !!c.cloudflare.token, zone: c.cloudflare.zoneName, account: c.cloudflare.account },
 });
@@ -234,20 +257,13 @@ route('POST', '/api/settings', async (req, res) => {
 });
 route('POST', '/api/settings/outbound', async (req, res) => {
   const b = await body(req);
-  if (b.mode === 'direct') {
-    const r = await root('relay-clear'); if (r.code) fail(500, 'Could not change Postfix: ' + (r.err || r.out).trim());
-    cfg.update(c => { c.outbound = { mode: 'direct', host: '', port: 587, user: '', spfInclude: '' }; });
-  } else {
-    const host = String(b.host || '').trim().toLowerCase(), port = +b.port || 587, user = String(b.user || '').trim();
-    if (!isDomain(host)) fail(400, 'Enter the relay server name, like smtp-relay.brevo.com.');
-    if (![25, 465, 587, 2525].includes(port)) fail(400, 'The port should be 587, 465, 2525 or 25.');
-    if (!user || /[\s:]/.test(user)) fail(400, 'Enter the relay username (no spaces).');
-    if (!b.pass && cfg.load().outbound.host !== host) fail(400, 'Enter the relay password.');
-    const r = await root('relay-set', [host, port, user], { input: String(b.pass || '') + '\n' });
-    if (r.code) fail(500, 'Could not change Postfix: ' + (r.err || r.out).trim());
-    cfg.update(c => { c.outbound = { mode: 'relay', host, port, user, spfInclude: String(b.spfInclude || '').trim().toLowerCase() }; });
-  }
+  try { await outbound.configure(b); } catch (e) { fail(e.status || 500, e.message, { probes: e.probes }); }
   json(res, 200, publicSettings(cfg.load()));
+});
+route('GET', '/api/outbound/probe', async (req, res, p, s, url) => {
+  const host = String(url.searchParams.get('host') || '').trim().toLowerCase();
+  if (!isDomain(host)) fail(400, 'Enter a server name first.');
+  json(res, 200, { host, results: await outbound.probeAll(host) });
 });
 route('POST', '/api/settings/rotate-secret', async (req, res) => {
   const next = cfg.update(c => { c.inboundSecret = token(24); });
@@ -338,6 +354,10 @@ async function handle(req, res) {
       if (!s) return json(res, 401, { error: 'Please sign in.' });
       // Cross-site requests can't set custom headers without a preflight we never approve.
       if (req.method !== 'GET' && req.headers['x-selfmail'] !== '1') return json(res, 403, { error: 'Missing request header.' });
+      // Nothing but the agreement itself until it's signed (incoming mail keeps arriving meanwhile).
+      if (!(c.agreement && c.agreement.version >= agreement.VERSION) && !['/api/state', '/api/agreement', '/api/logout', '/api/events'].includes(url.pathname)) {
+        return json(res, 403, { error: 'Please read and sign the responsible-use agreement first.', needsAgreement: true });
+      }
     } else if (req.method === 'POST' && url.pathname === '/api/login' && req.headers['x-selfmail'] !== '1') {
       return json(res, 403, { error: 'Missing request header.' });
     }
@@ -405,6 +425,8 @@ if (require.main === module) {
   store.all().then(r => console.log(`index ready: ${r.length} messages`)).catch(e => console.error('index: ' + e.message));
   watchInbox();
   setInterval(() => ipWatch().catch(e => console.error('ipWatch: ' + e.message)), 10 * 60e3).unref();
+  setInterval(() => outbound.watch(), 5 * 60e3).unref();
+  setTimeout(() => outbound.watch(), 60e3).unref();
   setTimeout(() => ipWatch().catch(() => {}), 30e3).unref();
   for (const addr of listenAddrs(c)) {
     const srv = http.createServer(onRequest);

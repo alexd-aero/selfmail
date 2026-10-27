@@ -25,31 +25,39 @@ case "$op" in
     exec postsuper -d "$id"
     ;;
   relay-set)
-    host="${1:-}"; port="${2:-}"; user="${3:-}"
+    # relay-set HOST PORT USER [primary|backup]   (password on stdin; empty = keep the stored one)
+    #   primary: every message goes through the relay (relayhost)
+    #   backup:  direct delivery first; Postfix hands a message to the relay only
+    #            when the recipient's server can't be reached (smtp_fallback_relay)
+    host="${1:-}"; port="${2:-}"; user="${3:-}"; role="${4:-primary}"
     host_ok "$host" || die "bad host"
     [[ "$port" =~ ^(25|465|587|2525)$ ]] || die "bad port"
     [[ "$user" =~ ^[^[:space:]:]{1,200}$ ]] || die "bad user"
+    [[ "$role" =~ ^(primary|backup)$ ]] || die "bad role"
+    [ "$role" = backup ] && [ "$port" = 465 ] && die "port 465 can't be a per-message backup; use 587 or 2525"
     IFS= read -r pass || true
     if [ -z "$pass" ]; then
-      # keep the stored password when only host/port/user changed
+      # keep the stored password when only the port/role/user changed
       pass="$(awk -v k="[$host]:" 'index($0, k)==1 {r=substr($0, index($0, " ")+1); print substr(r, index(r, ":")+1)}' /etc/postfix/sasl_passwd 2>/dev/null | head -1)"
       [ -n "$pass" ] || die "no password given"
     fi
     [[ "$pass" != *$'\n'* ]] || die "bad password"
     printf '[%s]:%s %s:%s\n' "$host" "$port" "$user" "$pass" > /etc/postfix/sasl_passwd
-    chmod 600 /etc/postfix/sasl_passwd
-    postmap /etc/postfix/sasl_passwd
-    chmod 600 /etc/postfix/sasl_passwd.db 2>/dev/null || true
-    wrapper=no; [ "$port" = 465 ] && wrapper=yes
-    postconf -e "relayhost = [$host]:$port" "smtp_sasl_auth_enable = yes" "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd" \
-      "smtp_sasl_security_options = noanonymous" "smtp_sasl_tls_security_options = noanonymous" "smtp_tls_security_level = encrypt" \
-      "smtp_tls_wrappermode = $wrapper"
+    chmod 600 /etc/postfix/sasl_passwd; postmap /etc/postfix/sasl_passwd; chmod 600 /etc/postfix/sasl_passwd.db 2>/dev/null || true
+    printf '[%s]:%s encrypt\n' "$host" "$port" > /etc/postfix/tls_policy; postmap /etc/postfix/tls_policy
+    common=("smtp_sasl_auth_enable = yes" "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd" "smtp_sasl_security_options = noanonymous" "smtp_sasl_tls_security_options = noanonymous")
+    if [ "$role" = primary ]; then
+      wrapper=no; [ "$port" = 465 ] && wrapper=yes
+      postconf -e "${common[@]}" "relayhost = [$host]:$port" "smtp_fallback_relay =" "smtp_tls_security_level = encrypt" "smtp_tls_wrappermode = $wrapper" "smtp_tls_policy_maps ="
+    else
+      postconf -e "${common[@]}" "relayhost =" "smtp_fallback_relay = [$host]:$port" "smtp_tls_security_level = may" "smtp_tls_wrappermode = no" "smtp_tls_policy_maps = hash:/etc/postfix/tls_policy"
+    fi
     postfix reload >/dev/null 2>&1 || systemctl restart postfix
-    echo "relay set to [$host]:$port"
+    echo "relay [$host]:$port ($role)"
     ;;
   relay-clear)
-    postconf -e "relayhost =" "smtp_sasl_auth_enable = no" "smtp_tls_security_level = may" "smtp_tls_wrappermode = no"
-    rm -f /etc/postfix/sasl_passwd /etc/postfix/sasl_passwd.db
+    postconf -e "relayhost =" "smtp_fallback_relay =" "smtp_sasl_auth_enable = no" "smtp_tls_security_level = may" "smtp_tls_wrappermode = no" "smtp_tls_policy_maps ="
+    rm -f /etc/postfix/sasl_passwd /etc/postfix/sasl_passwd.db /etc/postfix/tls_policy /etc/postfix/tls_policy.db
     postfix reload >/dev/null 2>&1 || systemctl restart postfix
     echo "sending directly"
     ;;

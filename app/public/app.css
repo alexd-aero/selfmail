@@ -240,3 +240,23 @@ pre.log{background:#0b0f15;color:#c9d4e3;border-radius:12px;padding:14px;font:12
   .recs td.v{max-width:none}
   .page-in{padding:18px 14px 50px}
 }
+
+/* ---------- responsible-use agreement ---------- */
+.agree-card{width:min(760px,100%);background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:30px 32px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:16px;margin:30px 0}
+.agree-card h1{margin:0;font-size:24px;letter-spacing:-.3px}
+.agree-card>p{margin:0}
+.isp-box{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:16px;background:var(--bg)}
+.isp-box small{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.8px}
+.isp{display:flex;align-items:center;gap:12px}
+.isp b{display:block;font-size:16px}.isp small{display:block;color:var(--muted);font-size:12.5px;text-transform:none;letter-spacing:0;font-weight:400}
+.isp-logo{width:36px;height:36px;border-radius:9px;object-fit:contain;background:#fff;padding:4px;border:1px solid var(--line);flex:none}
+.isp-logo.big{width:52px;height:52px;border-radius:12px;padding:6px}
+.isp-logo.mono{display:grid;place-items:center;font-weight:800;color:#fff;background:var(--accent);padding:0}
+.terms{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+.terms li::marker{font-weight:800;color:var(--accent)}
+.terms b{display:block;margin-bottom:2px}
+.terms p{margin:0;color:var(--muted);line-height:1.5}
+label.check{align-items:flex-start;font-weight:500;line-height:1.45;cursor:pointer}
+label.check input{width:18px;height:18px;margin-top:1px;accent-color:var(--accent);flex:none}
+.agree-read{max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:14px}
+.dialog .box:has(.agree-read){width:min(680px,100%)}

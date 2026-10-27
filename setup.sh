@@ -8,8 +8,9 @@
 #                                   (--secret KEEPS an existing webhook secret so the relay keeps delivering)
 #
 # Non-interactive install: pass answers as flags, e.g.
-#   sudo ./setup.sh --yes --domain mail.example.com --host mx.example.com --mailbox me \
+#   sudo ./setup.sh --yes --agree "Your Full Name" --domain mail.example.com --host mx.example.com --mailbox me \
 #        --mode relay --tunnel-host mailhook.example.com --user me --password 'long password'
+#   (--agree signs the responsible-use agreement, which every install must accept)
 #
 set -euo pipefail
 umask 022
@@ -37,14 +38,14 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required."
 # ------------------------------------------------------------------- flags --
 MODE_RUN=install; YES=0
 DOMAIN=""; MXHOST=""; MAILBOX=""; SELECTOR=""; INMODE=""; PUBLIC_IP=""; WEBHOOK_URL=""; TUNNEL=""; TUNNEL_HOST=""
-UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""
+UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""; AGREE_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) MODE_RUN=update ;; --adopt) MODE_RUN=adopt ;; --yes|-y) YES=1 ;;
     --domain) DOMAIN="$2"; shift ;; --host) MXHOST="$2"; shift ;; --mailbox) MAILBOX="$2"; shift ;; --selector) SELECTOR="$2"; shift ;;
     --mode) INMODE="$2"; shift ;; --public-ip) PUBLIC_IP="$2"; shift ;; --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --tunnel) TUNNEL="$2"; shift ;; --tunnel-host) TUNNEL_HOST="$2"; TUNNEL=${TUNNEL:-yes}; shift ;; --tunnel-unit) TUNNEL_UNIT="$2"; shift ;;
-    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;;
+    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;; --agree) AGREE_NAME="$2"; shift ;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
@@ -365,6 +366,50 @@ migrate_v1() { # selfmail 1.x kept the secret in /etc/selfmail/env and ran as us
   return 0
 }
 
+agreement_signed() { [ -f "$ETC/config.json" ] && [ "$(node_cfg 'c.agreement&&c.agreement.version>=1?1:0')" = 1 ]; }
+sign_agreement() { # required for a fresh install; offered on --update/--adopt (otherwise the web mail asks)
+  local required="$1"
+  agreement_signed && { ok "responsible-use agreement already signed"; return; }
+  local j isp ip
+  j="$(curl -fsS --max-time 8 'http://ip-api.com/json/?fields=status,query,isp' 2>/dev/null || true)"
+  isp="$(printf '%s' "$j" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write((j.isp||"").replace(/,?\s+(inc|llc|ltd|corp)\.?$/i,""))}catch(e){}})')"
+  ip="$(printf '%s' "$j" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).query||"")}catch(e){}})')"
+  isp="${isp:-your internet provider}"
+  if [ "$INTERACTIVE" = 1 ] || [ -z "$AGREE_NAME" ]; then
+    step "Responsible-use agreement"
+    say "  This server's internet connection: ${B}$isp${Z}${ip:+ ($ip)}"
+    say ""
+    say "  1. ${B}You are responsible for this server${Z} — every message sent or received through it, who can"
+    say "     use it, and keeping it secure."
+    say "  2. ${B}No spam or abuse${Z} — no bulk or unsolicited mail, phishing, scams, malware, harassment or"
+    say "     anything illegal, by you or anyone you let use it."
+    say "  3. ${B}You follow $isp's terms of service.${Z} If abuse is reported from your address, $isp can warn"
+    say "     you, block mail ports, or suspend or end your service, and your address can be blocklisted."
+    say "     Any such conflict is between you and $isp."
+    say "  4. ${B}Mail providers can refuse your mail${Z}; delivery isn't guaranteed."
+    say "  5. ${B}No warranty, no liability.${Z} selfmail is free software provided \"as is\" (MIT). Its authors"
+    say "     are not responsible for how you use it or for anything that results from running it."
+    say "  6. Under 18? Ask a parent or guardian to read this with you."
+    say ""
+  fi
+  if [ -z "$AGREE_NAME" ] && [ "$INTERACTIVE" = 1 ]; then
+    local yes=""
+    printf '  Type %sI AGREE%s to accept: ' "$B" "$Z"; read -r yes </dev/tty || true
+    [ "$yes" = "I AGREE" ] || { [ "$required" = 1 ] && die "The agreement wasn't accepted — nothing was installed."; warn "not signed here — the web mail will ask"; return; }
+    while [ ${#AGREE_NAME} -lt 3 ]; do printf '  Type your full name to sign: '; read -r AGREE_NAME </dev/tty || true; done
+  fi
+  if [ -z "$AGREE_NAME" ]; then
+    [ "$required" = 1 ] && die "Pass --agree \"Your Full Name\" to accept the responsible-use agreement (see above)."
+    warn "agreement not signed yet — the web mail will ask on first sign-in"; return
+  fi
+  AGREE_NAME="$AGREE_NAME" AGREE_ISP="$isp" AGREE_IP="$ip" "$NODE" -e '
+    const fs=require("fs"),f=process.argv[1]; let c={}; try{c=JSON.parse(fs.readFileSync(f,"utf8"))}catch(e){}
+    c.agreement={version:1,name:process.env.AGREE_NAME.trim(),at:Date.now(),ip:process.env.AGREE_IP,isp:process.env.AGREE_ISP,via:"installer"};
+    fs.writeFileSync(f+".tmp",JSON.stringify(c,null,2)+"\n",{mode:0o600}); fs.renameSync(f+".tmp",f);' "$ETC/config.json"
+  [ -n "${VUID:-}" ] && chown vmail:vmail "$ETC/config.json" 2>/dev/null || true
+  ok "signed by $AGREE_NAME"
+}
+
 ensure_login() {
   if SELFMAIL_ETC="$ETC" "$NODE" -e 'process.exit(Object.keys(JSON.parse(require("fs").readFileSync(process.env.SELFMAIL_ETC+"/users.json","utf8"))).length?0:1)' 2>/dev/null && [ -z "$UI_PASS" ]; then
     ok "existing web login kept"; return
@@ -423,6 +468,7 @@ if [ "$MODE_RUN" = update ]; then
   migrate_v1
   deploy_app; install_service; copy_dkim_public
   [ -f /etc/systemd/system/selfmail-health.timer ] && health_timer ""
+  sign_agreement 0
   ensure_login
   start_and_check
   ok "updated to $SM_VERSION — settings and mail untouched"
@@ -448,7 +494,7 @@ if [ "$MODE_RUN" = adopt ]; then
   chown -R vmail:vmail "$MAILROOT/$DOMAIN" 2>/dev/null || true
   deploy_app; install_service; copy_dkim_public
   [ "$INMODE" = relay ] && [ -n "$WEBHOOK_URL" ] && health_timer ""
-  ensure_login; start_and_check; summary
+  sign_agreement 0; ensure_login; start_and_check; summary
   exit 0
 fi
 
@@ -477,6 +523,9 @@ DETECTED="$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)
 ask PUBLIC_IP "Public IPv4 address" "$DETECTED"
 say ""; say "  ${B}$MAILBOX@$DOMAIN${Z} (and every other @$DOMAIN address) · host $MXHOST · $INMODE mode"
 if [ "$INTERACTIVE" = 1 ]; then ask GO "Install now? (y/n)" "y"; case "$GO" in y|Y|yes) ;; *) die "Stopped — nothing was changed." ;; esac; fi
+
+mkdir -p "$ETC"; [ -f "$ETC/config.json" ] || echo "{}" > "$ETC/config.json"
+sign_agreement 1
 
 step "Packages"
 clear_port25

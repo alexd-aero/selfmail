@@ -75,6 +75,7 @@ async function api(method, url, body) {
   if (r.status === 401 && !url.endsWith('/login')) { showLogin(); throw new Error('Please sign in again.'); }
   const ct = r.headers.get('content-type') || '';
   const data = ct.includes('json') ? await r.json().catch(() => ({})) : await r.text();
+  if (r.status === 403 && data && data.needsAgreement) { showAgreement(); throw new Error(data.error); }
   if (!r.ok) throw Object.assign(new Error((data && data.error) || `Error ${r.status}`), { data });
   return data;
 }
@@ -157,6 +158,42 @@ function showLogin(msg) {
     h('label', { class: 'f' }, 'Username', u), h('label', { class: 'f' }, 'Password', p), err, btn);
   document.body.replaceChildren(h('div', { class: 'login' }, form), h('div', { class: 'toasts' }));
   u.focus();
+}
+
+// ========================================================== agreement ====
+function ispBadge(i, big) {
+  const logo = i.logo ? h('img', { src: i.logo, alt: '', class: 'isp-logo' + (big ? ' big' : '') }) : h('div', { class: 'isp-logo mono' + (big ? ' big' : ''), text: (i.name || '?')[0] });
+  return h('div', { class: 'isp' }, logo, h('div', {}, h('b', { text: i.name || 'Your internet provider' }), h('small', { text: [i.network !== i.name ? i.network : '', i.asn, i.ip].filter(Boolean).join(' · ') })));
+}
+function termsList(terms) { return h('ol', { class: 'terms' }, terms.map(t => h('li', {}, h('b', { text: t.h }), h('p', { text: t.p })))); }
+async function showAgreement() {
+  if ($('.agree-page')) return;
+  document.title = 'Responsible use · selfmail';
+  document.body.replaceChildren(h('div', { class: 'login agree-page' }, h('div', { class: 'agree-card' }, h('span', { class: 'spin' }))), h('div', { class: 'toasts' }));
+  let a;
+  try { a = await (await fetch('/api/agreement', { credentials: 'same-origin' })).json(); } catch (e) { return toast('Could not load the agreement — check the connection and reload.', { bad: true }); }
+  const name = h('input', { type: 'text', placeholder: 'Your full name', autocomplete: 'name' });
+  const tick = h('input', { type: 'checkbox' });
+  const err = h('div', { class: 'err' });
+  const btn = h('button', { class: 'btn pri', disabled: true, style: { height: '44px' } }, 'Sign and continue');
+  const valid = () => { btn.disabled = !(tick.checked && name.value.trim().length >= 3); };
+  name.addEventListener('input', valid); tick.addEventListener('change', valid);
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; err.textContent = '';
+    try { await api('POST', '/api/agreement', { name: name.value, agree: tick.checked }); boot(); }
+    catch (e) { err.textContent = e.message; valid(); }
+  });
+  $('.agree-card').replaceChildren(
+    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('shield')), 'selfmail'),
+    h('h1', { text: 'Before you start: responsible use' }),
+    h('p', { class: 'muted', text: 'Running your own mail server comes with responsibility. Read this, then sign it with your name. You only do this once.' }),
+    h('div', { class: 'isp-box' }, h('small', { text: 'This server’s internet connection' }), ispBadge(a.isp, true)),
+    termsList(a.terms),
+    h('label', { class: 'f' }, 'Signature', name, h('small', { text: 'Typing your name here is your signature.' })),
+    h('label', { class: 'row check' }, tick, h('span', { text: `I have read this agreement. I am responsible for how this server is used, I will follow ${a.isp.name || 'my internet provider'}’s terms, and the authors of selfmail are not responsible for it.` })),
+    err,
+    h('div', { class: 'row' }, btn, h('span', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Selfmail': '1' } }).catch(() => {}); showLogin(); } }, 'Sign out')));
+  scrollTo(0, 0);
 }
 
 // ============================================================== shell ====
@@ -677,7 +714,7 @@ async function pageStatus() {
     tile(s.webhook.ok === null ? '' : s.webhook.ok ? 'ok' : 'bad', 'Incoming mail path', s.webhook.detail),
     tile(ipOk ? 'ok' : 'warn', 'Public IP', s.ip.current ? `${s.ip.current}${ipOk ? '' : ` — settings and DNS still say ${s.ip.configured}. Update it in Settings, or turn on automatic updates on the Domain page.`}` : 'Could not detect.'),
     tile(s.ptr.confirmed ? 'ok' : s.ptr.names.length ? 'warn' : 'bad', 'Reverse DNS', s.ptr.names.length ? `${s.ptr.names[0]}${s.ptr.confirmed ? '' : ' — doesn’t point back to this IP. Your internet provider controls this; it costs a little spam score. Sending through a relay avoids it.'}` : 'None. Some receivers reject mail from IPs without reverse DNS.'),
-    s.outbound25 === null ? tile('ok', 'Sending route', `Through ${s.outbound.host}:${s.outbound.port}`) : tile(s.outbound25 ? 'ok' : 'bad', 'Outgoing port 25', s.outbound25 ? 'Open — this server can deliver mail directly.' : 'Blocked by your provider. Set up a relay in Settings → Sending.'),
+    s.outbound25 === null ? tile('ok', 'Sending route', `Through ${s.outbound.host} on port ${s.outbound.using}${s.outbound.mode === 'auto' ? ' (port 25 is blocked, so the backup relay is sending)' : ''}`) : tile(s.outbound25 ? 'ok' : 'bad', 'Outgoing port 25', s.outbound25 ? `Open — this server delivers mail itself.${s.outbound.mode === 'auto' ? ` ${s.outbound.host}:${s.outbound.using} is the backup.` : ''}` : `Blocked by your internet provider.${s.outbound.mode === 'auto' ? ' The backup relay takes over.' : ' Mail can only leave through a relay (Settings → Sending).'}`),
     s.disk ? tile(s.disk.free / s.disk.total > 0.1 ? 'ok' : 'warn', 'Disk space', `${fmtSize(s.disk.free)} free of ${fmtSize(s.disk.total)}`) : null,
   ];
   const bl = h('div', { class: 'kv' }, h('div', { class: 'tile' }, h('span', { class: 'spin' })));
@@ -715,16 +752,30 @@ async function pageSettings() {
   const nameIn = h('input', { type: 'text', value: s.fromName, placeholder: 'Your name' });
   const sigIn = h('textarea', { rows: 4, placeholder: 'Shown under every message you write' }); sigIn.value = s.signature;
   // sending
-  let outMode = s.outbound.mode;
+  let outMode = s.outbound.mode || 'direct';
   const relayBox = h('div', { class: 'form' });
   const hostIn = h('input', { type: 'text', value: s.outbound.host, placeholder: 'smtp-relay.example.com' });
-  const portIn = h('select', {}, [587, 465, 2525, 25].map(p => h('option', { value: p, text: p }))); portIn.value = s.outbound.port || 587;
+  const portIn = h('select', {}, [['auto', 'Automatic: 587 → 465 → 2525 → 25'], ['587', '587 (STARTTLS)'], ['465', '465 (TLS)'], ['2525', '2525 (STARTTLS)'], ['25', '25']].map(([v, t]) => h('option', { value: v, text: t }))); portIn.value = String(s.outbound.port || 'auto');
   const userIn = h('input', { type: 'text', value: s.outbound.user, autocomplete: 'off' });
-  const passIn = h('input', { type: 'password', placeholder: s.outbound.mode === 'relay' ? 'Leave empty to keep the current password' : '', autocomplete: 'new-password' });
+  const passIn = h('input', { type: 'password', placeholder: s.outbound.host ? 'Leave empty to keep the current password' : '', autocomplete: 'new-password' });
   const spfIn = h('input', { type: 'text', value: s.outbound.spfInclude, placeholder: 'e.g. spf.brevo.com' });
-  const segOut = h('div', { class: 'seg' }, [['direct', 'Directly from this server'], ['relay', 'Through a relay service']].map(([k, t]) => h('button', { class: outMode === k ? 'on' : '', onclick: () => { outMode = k; $$('button', segOut).forEach((b, i) => b.classList.toggle('on', ['direct', 'relay'][i] === k)); relayBox.classList.toggle('hide', k !== 'relay'); } }, t)));
-  relayBox.append(h('div', { class: 'grid2' }, field('Relay server', hostIn), field('Port', portIn)), h('div', { class: 'grid2' }, field('Username', userIn), field('Password', passIn)), field('SPF include (optional)', spfIn, 'Your relay’s SPF domain, so the DNS page can add it.'));
-  relayBox.classList.toggle('hide', outMode !== 'relay');
+  const probeOut = h('div', { class: 'chips' });
+  const showProbes = list => probeOut.replaceChildren(...(list || []).map(p => h('span', { class: 'chip ' + (p.ok ? 'ok' : 'bad'), title: p.banner || p.error || '' }, `${p.port} ${p.ok ? `✓ ${p.ms} ms` : '✗ ' + (p.error || 'no')}`)));
+  const testBtn = h('button', { class: 'btn sm', onclick: async () => { testBtn.disabled = true; probeOut.replaceChildren(h('span', { class: 'spin' })); try { showProbes((await api('GET', '/api/outbound/probe?host=' + encodeURIComponent(hostIn.value.trim()))).results); } catch (e) { probeOut.replaceChildren(); fail(e); } testBtn.disabled = false; } }, 'Test ports');
+  const MODES = [['direct', 'Directly', 'Your server delivers every message itself, on port 25 (the only port mail servers accept mail from each other on).'],
+    ['auto', 'Directly, relay as backup', 'Your server still sends itself. A relay only steps in for a message that can’t be delivered directly — or for everything while your provider blocks port 25.'],
+    ['relay', 'Always through a relay', 'Every message is handed to a relay service on port 587, 465 or 2525, and it delivers for you.']];
+  const modeHelp = h('p', { class: 'sub', style: { margin: '0' } });
+  const segOut = h('div', { class: 'seg' }, MODES.map(([k, t]) => h('button', { 'data-k': k, class: outMode === k ? 'on' : '', onclick: () => { outMode = k; setMode(); } }, t)));
+  const setMode = () => { $$('button', segOut).forEach(b => b.classList.toggle('on', b.dataset.k === outMode)); relayBox.classList.toggle('hide', outMode === 'direct'); modeHelp.textContent = MODES.find(m => m[0] === outMode)[2]; };
+  relayBox.append(h('div', { class: 'grid2' }, field('Relay server', hostIn), field('Port', portIn, 'Automatic tries each in order and switches if one stops answering.')),
+    h('div', { class: 'row' }, testBtn, probeOut),
+    h('div', { class: 'grid2' }, field('Username', userIn), field('Password', passIn)), field('SPF include (optional)', spfIn, 'Your relay’s SPF domain, so the DNS page can add it.'));
+  setMode(); showProbes(s.outbound.probes);
+  const o = s.outbound;
+  const nowLine = o.mode === 'direct' || !o.host ? 'Right now: your server sends every message itself on port 25.'
+    : o.active === 'relay' ? `Right now: everything goes through ${o.host} on port ${o.using}.` : `Right now: your server sends itself; ${o.host} on port ${o.using} is the backup.`;
+  const notes = (o.notes || []).slice(0, 5).map(n => h('div', { class: 'muted', style: { fontSize: '12.5px' } }, `${fmtWhen(n.at)} — ${n.text}`));
   // receiving
   const hookIn = h('input', { type: 'url', value: s.webhookUrl, placeholder: 'https://mailhook.example.com' });
   const ep = h('code', { style: { wordBreak: 'break-all', fontSize: '12.5px' }, text: s.webhookEndpoint || '(set a public URL first)' });
@@ -744,12 +795,12 @@ async function pageSettings() {
   $('#page').replaceChildren(pageShell('Settings', `Signed in as ${S.me.user} · ${S.me.address} · selfmail ${S.me.version}`,
     h('div', { class: 'card' }, h('h2', { text: 'Your name & signature' }), h('div', { class: 'form' }, field('Display name', nameIn, 'Shown as the sender name on mail you send.'), field('Signature', sigIn),
       h('div', {}, h('button', { class: 'btn pri', onclick: () => save({ fromName: nameIn.value, signature: sigIn.value }) }, 'Save')))),
-    h('div', { class: 'card' }, h('h2', { text: 'Sending' }), h('p', { class: 'sub', text: 'Home internet addresses are often distrusted by Gmail and Outlook (and blocked when on Spamhaus). A relay service (Brevo, SMTP2GO, Mailgun, Amazon SES…) sends for you from a trusted address and fixes that.' }),
-      h('div', { class: 'form' }, segOut, relayBox, h('div', {}, h('button', { class: 'btn pri', onclick: async e => {
+    h('div', { class: 'card' }, h('h2', { text: 'Sending' }), h('p', { class: 'sub', text: nowLine }),
+      h('div', { class: 'form' }, segOut, modeHelp, relayBox, h('div', {}, h('button', { class: 'btn pri', onclick: async e => {
         e.target.disabled = true;
-        try { Object.assign(s, await api('POST', '/api/settings/outbound', { mode: outMode, host: hostIn.value, port: +portIn.value, user: userIn.value, pass: passIn.value, spfInclude: spfIn.value })); passIn.value = ''; toast(outMode === 'relay' ? 'Mail now goes out through the relay' : 'Mail now goes out directly'); }
-        catch (x) { fail(x); } e.target.disabled = false;
-      } }, 'Save sending method')))),
+        try { const r = await api('POST', '/api/settings/outbound', { mode: outMode, host: hostIn.value, port: portIn.value, user: userIn.value, pass: passIn.value, spfInclude: spfIn.value }); passIn.value = ''; const x = r.outbound; toast(x.mode === 'direct' ? 'Your server now sends every message itself' : x.active === 'relay' ? `Sending through ${x.host} on port ${x.using}` : `Sending directly; ${x.host}:${x.using} is the backup`); showPage('settings'); }
+        catch (x) { if (x.data?.probes) showProbes(x.data.probes); fail(x); } e.target.disabled = false;
+      } }, 'Save sending method')), notes.length ? h('div', {}, h('b', { style: { fontSize: '13px' }, text: 'Recent automatic changes' }), notes) : null)),
     h('div', { class: 'card' }, h('h2', { text: 'Receiving' }), h('p', { class: 'sub', text: s.mode === 'relay' ? 'Forward Email receives your mail on port 25 and posts each message to this server’s public URL.' : 'This server receives mail itself on port 25.' }),
       h('div', { class: 'form' }, s.mode === 'relay' ? [field('Public URL of this server', hookIn, 'The address the relay posts to (usually a Cloudflare Tunnel). Only the mail drop-off path is served there.'),
         h('div', { class: 'f' }, 'Drop-off address (goes in the forward-email TXT record)', h('div', { class: 'row' }, ep, h('button', { class: 'copy', onclick: () => copyText(ep.textContent) }, icon('copy')))),
@@ -761,6 +812,8 @@ async function pageSettings() {
     h('div', { class: 'card' }, h('h2', { text: 'Security' }), h('div', { class: 'form' }, h('div', { class: 'grid2' }, field('Current password', curP), field('New password', newP, 'At least 10 characters.')),
       h('div', {}, h('button', { class: 'btn pri', onclick: async () => { try { await api('POST', '/api/account/password', { current: curP.value, next: newP.value }); curP.value = newP.value = ''; toast('Password changed — other devices were signed out'); } catch (e) { fail(e); } } }, 'Change password')),
       sess, h('div', {}, h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/account/signout-others').catch(fail); toast('Other devices signed out'); showPage('settings'); } }, 'Sign out other devices')))),
+    h('div', { class: 'card' }, h('h2', {}, icon('shield'), 'Responsible use'), s.agreement ? h('p', { class: 'sub', text: `Signed by ${s.agreement.name} on ${fmtFull(s.agreement.at)}${s.agreement.isp ? ` (internet provider: ${s.agreement.isp})` : ''}.` }) : null,
+      h('div', {}, h('button', { class: 'btn', onclick: async () => { const a = await api('GET', '/api/agreement'); dialog('Responsible-use agreement', h('div', { class: 'agree-read' }, ispBadge(a.isp), termsList(a.terms)), [['Close', true, 'pri']]); } }, 'Read the agreement'))),
     h('div', { class: 'card' }, h('h2', { text: 'This browser' }), h('div', { class: 'form' }, h('div', { class: 'grid2' }, field('Appearance', themeSel),
       h('label', { class: 'f' }, 'New-mail notifications', h('div', {}, h('button', { class: 'btn', onclick: async e => {
         if (!('Notification' in window)) return toast('This browser can’t show notifications', { bad: true });
@@ -835,6 +888,7 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 async function boot() {
   try { S.me = await api('GET', '/api/state'); }
   catch (e) { if (!S.me) showLogin(); return; }
+  if (!S.me.agreement) return showAgreement();
   shell();
   document.body.addEventListener('click', e => { if (e.target.classList?.contains('scrim')) $('#shell').classList.remove('navopen'); });
   await loadFolders();

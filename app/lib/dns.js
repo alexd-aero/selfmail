@@ -33,7 +33,7 @@ function spfValue(c, existing = '') {
   let mech = keep.filter(m => !/^[~?+-]?all$/i.test(m) && !/^redirect=/i.test(m));
   if (c.spfIp && c.spfIp !== c.publicIp) mech = mech.filter(m => m !== `ip4:${c.spfIp}`);   // our previous IP
   if (c.publicIp && !mech.includes(`ip4:${c.publicIp}`)) mech.unshift(`ip4:${c.publicIp}`);
-  const inc = (c.outbound?.mode === 'relay' && c.outbound.spfInclude) ? `include:${c.outbound.spfInclude}` : '';
+  const inc = (['relay', 'auto'].includes(c.outbound?.mode) && c.outbound.spfInclude) ? `include:${c.outbound.spfInclude}` : '';
   if (inc && !mech.includes(inc)) mech.push(inc);
   const all = (keep.find(m => /^[~?+-]?all$/i.test(m)) || '~all');
   return ['v=spf1', ...mech, all].join(' ');
