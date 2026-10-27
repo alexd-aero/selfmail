@@ -49,14 +49,23 @@ case "$cmd" in
     ;;
   update)
     need_root update
+    # git over HTTP/1.1 (some networks break git's HTTP/2: "Error in the HTTP2 framing layer"),
+    # and a plain download when git can't get through at all
+    G=(git -c http.version=HTTP/1.1)
     src="$(cat "$APP/.source" 2>/dev/null)"
     if [ -n "$src" ] && [ -d "$src/.git" ]; then
       owner="$(stat -c %U "$src")"
       echo "Pulling the latest version into $src"
-      if [ "$owner" != root ]; then sudo -u "$owner" git -C "$src" pull --ff-only || exit 1; else git -C "$src" pull --ff-only || exit 1; fi
-      exec "$src/setup.sh" --update "$@"
+      if { [ "$owner" != root ] && sudo -u "$owner" "${G[@]}" -C "$src" pull -q --ff-only; } || { [ "$owner" = root ] && "${G[@]}" -C "$src" pull -q --ff-only; }; then
+        exec "$src/setup.sh" --update "$@"
+      fi
+      echo "  git couldn't pull — downloading instead"
     fi
-    tmp="$(mktemp -d)"; git clone -q --depth 1 https://github.com/alexd-aero/selfmail "$tmp/selfmail" || exit 1
+    tmp="$(mktemp -d)"
+    if "${G[@]}" clone -q --depth 1 https://github.com/alexd-aero/selfmail "$tmp/selfmail" 2>/dev/null; then exec "$tmp/selfmail/setup.sh" --update "$@"; fi
+    mkdir -p "$tmp/selfmail"
+    curl -fsSL --retry 3 https://codeload.github.com/alexd-aero/selfmail/tar.gz/main | tar -xz -C "$tmp/selfmail" --strip-components=1 \
+      || { echo "Couldn't download selfmail — check the internet connection."; exit 1; }
     exec "$tmp/selfmail/setup.sh" --update "$@"
     ;;
   doctor)

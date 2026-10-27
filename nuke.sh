@@ -150,7 +150,7 @@ if ask "Install the new, stable selfmail now?" y; then
   command -v git >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq git >/dev/null 2>&1; command -v dnf >/dev/null 2>&1 && dnf install -y -q git >/dev/null 2>&1; } || true
   dir="$(mktemp -d /tmp/selfmail-XXXX)"
   step "Downloading selfmail"
-  if git clone -q --depth 1 https://github.com/alexd-aero/selfmail "$dir/selfmail" 2>/dev/null || { mkdir -p "$dir/selfmail" && curl -fsSL https://codeload.github.com/alexd-aero/selfmail/tar.gz/main | tar -xz -C "$dir/selfmail" --strip-components=1; }; then
+  if git -c http.version=HTTP/1.1 clone -q --depth 1 https://github.com/alexd-aero/selfmail "$dir/selfmail" 2>/dev/null || { mkdir -p "$dir/selfmail" && curl -fsSL https://codeload.github.com/alexd-aero/selfmail/tar.gz/main | tar -xz -C "$dir/selfmail" --strip-components=1; }; then
     ok "$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/selfmail/app/package.json" | head -1)"
     exec bash "$dir/selfmail/setup.sh" < "$TTY"
   else die "Couldn't download selfmail — check the internet connection."; fi
