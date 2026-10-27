@@ -1,6 +1,6 @@
-/* selfmail 2 — interface ("aurora glass") */
+/* selfmail 2 — interface ("deep ocean": stealth navy glass) */
 :root{
-  --a1:#6d5efc; --a2:#a855f7; --a3:#ec4899;            /* accent gradient stops (changeable in Settings) */
+  --a1:#3b82f6; --a2:#1e3a8a; --a3:#0e7490;            /* accent gradient stops (changeable in Settings) */
   --accent:var(--a1); --accent-ink:#fff;
   --grad:linear-gradient(135deg,var(--a1),var(--a2) 55%,var(--a3));
   --font:"Inter","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Noto Sans",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji";
@@ -10,34 +10,34 @@
   --row-pad:12px;
 }
 [data-theme="dark"]{
-  --bg:#07080c; --bg2:#0d0f15;
-  --glass:rgba(20,22,31,.66); --glass2:rgba(28,31,43,.72); --solid:#12141c; --solid2:#181b26;
-  --hover:rgba(255,255,255,.045); --hover2:rgba(255,255,255,.075); --sel:color-mix(in srgb,var(--a1) 18%,transparent);
-  --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12);
-  --text:#eef0f7; --muted:#9aa1b4; --faint:#666e82;
-  --ok:#34d399; --ok-soft:rgba(52,211,153,.13); --warn:#fbbf24; --warn-soft:rgba(251,191,36,.12); --bad:#fb7185; --bad-soft:rgba(251,113,133,.13); --star:#fbbf24;
+  --bg:#04070e; --bg2:#081020;
+  --glass:rgba(10,18,33,.70); --glass2:rgba(16,27,47,.74); --solid:#0a1222; --solid2:#0f1a2e;
+  --hover:rgba(140,175,230,.045); --hover2:rgba(140,175,230,.08); --sel:color-mix(in srgb,var(--a1) 18%,transparent);
+  --line:rgba(140,175,230,.08); --line2:rgba(140,175,230,.14);
+  --text:#e6edf7; --muted:#8a9bb5; --faint:#56667f;
+  --ok:#34d399; --ok-soft:rgba(52,211,153,.13); --warn:#fbbf24; --warn-soft:rgba(251,191,36,.12); --bad:#f87171; --bad-soft:rgba(248,113,113,.13); --star:#fbbf24;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset,0 20px 60px -24px rgba(0,0,0,.8);
   --shadow-lg:0 30px 90px -20px rgba(0,0,0,.85),0 0 0 1px rgba(255,255,255,.06);
   --input:rgba(255,255,255,.04); color-scheme:dark;
 }
 [data-theme="light"]{
-  --bg:#eef0f7; --bg2:#f6f7fb;
+  --bg:#e9eef5; --bg2:#f4f7fb;
   --glass:rgba(255,255,255,.72); --glass2:rgba(255,255,255,.86); --solid:#ffffff; --solid2:#f7f8fc;
   --hover:rgba(15,20,40,.04); --hover2:rgba(15,20,40,.07); --sel:color-mix(in srgb,var(--a1) 11%,transparent);
   --line:rgba(15,20,40,.08); --line2:rgba(15,20,40,.14);
-  --text:#151a2c; --muted:#5b6379; --faint:#8e95a8;
-  --ok:#059669; --ok-soft:#d1fae5; --warn:#b45309; --warn-soft:#fef3c7; --bad:#e11d48; --bad-soft:#ffe4e6; --star:#f59e0b;
-  --shadow:0 1px 2px rgba(15,20,40,.05),0 18px 50px -26px rgba(30,30,80,.35);
-  --shadow-lg:0 30px 90px -24px rgba(30,30,80,.45),0 0 0 1px rgba(15,20,40,.06);
+  --text:#0f1b2d; --muted:#51627a; --faint:#8794a8;
+  --ok:#059669; --ok-soft:#d1fae5; --warn:#b45309; --warn-soft:#fef3c7; --bad:#dc2626; --bad-soft:#fee2e2; --star:#f59e0b;
+  --shadow:0 1px 2px rgba(15,20,40,.05),0 18px 50px -26px rgba(10,30,70,.35);
+  --shadow-lg:0 30px 90px -24px rgba(10,30,70,.45),0 0 0 1px rgba(15,20,40,.06);
   --input:rgba(15,20,40,.035); color-scheme:light;
 }
 [data-density="compact"]{--row-pad:7px}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.006em}
 body::before{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;
-  background:radial-gradient(40% 35% at 18% 12%,color-mix(in srgb,var(--a1) 30%,transparent),transparent 70%),
-             radial-gradient(35% 35% at 85% 18%,color-mix(in srgb,var(--a3) 18%,transparent),transparent 70%),
-             radial-gradient(45% 40% at 70% 95%,color-mix(in srgb,var(--a2) 20%,transparent),transparent 70%);
+  background:radial-gradient(40% 35% at 18% 12%,color-mix(in srgb,var(--a1) 16%,transparent),transparent 70%),
+             radial-gradient(35% 35% at 85% 18%,color-mix(in srgb,var(--a3) 14%,transparent),transparent 70%),
+             radial-gradient(45% 40% at 70% 95%,color-mix(in srgb,var(--a2) 26%,transparent),transparent 70%);
   filter:blur(20px);animation:aurora 26s ease-in-out infinite alternate}
 [data-theme="light"] body::before{opacity:.55}
 @keyframes aurora{50%{transform:translate(3%,-2%) scale(1.06)}100%{transform:translate(-3%,2%) scale(1.02)}}
@@ -74,8 +74,8 @@ label.f small{font-weight:400;color:var(--muted)}
 .muted{color:var(--muted)}
 .chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:11.5px;font-weight:650;background:var(--hover2);color:var(--muted);white-space:nowrap}
 .chip.ok{background:var(--ok-soft);color:var(--ok)}.chip.bad{background:var(--bad-soft);color:var(--bad)}.chip.warn{background:var(--warn-soft);color:var(--warn)}
-.chip.acc{background:hsl(var(--h,250) 80% 60% / .16);color:hsl(var(--h,250) 85% 72%)}
-[data-theme="light"] .chip.acc{color:hsl(var(--h,250) 70% 40%)}
+.chip.acc{background:hsl(var(--h,215) 60% 55% / .15);color:hsl(var(--h,215) 70% 72%)}
+[data-theme="light"] .chip.acc{color:hsl(var(--h,215) 65% 34%)}
 .kbd{font:600 11px var(--mono);padding:2px 6px;border-radius:6px;border:1px solid var(--line2);border-bottom-width:2px;color:var(--muted);background:var(--input)}
 .spin{width:18px;height:18px;border:2.5px solid var(--line2);border-top-color:var(--a1);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -83,14 +83,14 @@ label.f small{font-weight:400;color:var(--muted)}
 
 /* ---------- avatars ---------- */
 .avatar{position:relative;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;overflow:hidden;color:#fff;font-weight:750;font-size:15px;transition:opacity .15s;
-  background:linear-gradient(135deg,hsl(var(--h1,250) 72% 58%),hsl(var(--h2,290) 70% 46%));box-shadow:0 1px 0 rgba(255,255,255,.25) inset}
+  background:linear-gradient(135deg,hsl(var(--h1,215) 55% 50%),hsl(var(--h2,235) 55% 34%));box-shadow:0 1px 0 rgba(255,255,255,.25) inset}
 .avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;padding:7px;background:#fff;animation:fadein .3s ease both}
 .avatar.lg{width:48px;height:48px;border-radius:15px;font-size:19px}
 @keyframes fadein{from{opacity:0}}
 
 /* ---------- login ---------- */
 .login{min-height:100%;display:grid;place-items:center;padding:24px;position:relative;overflow:hidden}
-.login .orb{position:absolute;border-radius:50%;filter:blur(60px);opacity:.55;animation:float 14s ease-in-out infinite alternate;pointer-events:none}
+.login .orb{position:absolute;border-radius:50%;filter:blur(70px);opacity:.38;animation:float 14s ease-in-out infinite alternate;pointer-events:none}
 .login .orb.a{width:520px;height:520px;background:var(--a1);left:-140px;top:-160px}
 .login .orb.b{width:420px;height:420px;background:var(--a3);right:-120px;bottom:-140px;animation-delay:-5s}
 .login .orb.c{width:300px;height:300px;background:var(--a2);right:22%;top:12%;opacity:.35;animation-delay:-9s}
@@ -380,7 +380,7 @@ pre.log{background:#05060a;color:#c9d4e3;border:1px solid var(--line);border-rad
 @keyframes toastout{to{opacity:0;transform:translateY(8px) scale(.97)}}
 .toast .ti{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;flex:none;background:var(--grad)}
 .toast .ti .i{width:14px;height:14px;color:#fff;stroke-width:2.6}
-.toast.bad .ti{background:#e11d48}
+.toast.bad .ti{background:#dc2626}
 .toast button{border:0;background:rgba(255,255,255,.1);color:#fff;font-weight:700;padding:5px 11px;border-radius:8px}
 .toast button:hover{background:rgba(255,255,255,.18)}
 .toast .bar{position:absolute;left:0;bottom:0;height:3px;background:var(--grad);animation:countdown var(--ms) linear forwards}
@@ -470,7 +470,7 @@ label.check input{width:18px;height:18px;margin-top:1px;accent-color:var(--a1);f
 .cf-state { display: none; align-items: center; gap: 10px; margin: 12px 0 4px; padding: 10px 14px; border-radius: 12px; font-size: 13px; font-weight: 600; position: relative; }
 .cf-state.wait, .cf-state.busy, .cf-state.bad { display: flex; }
 .cf-state.wait { background: rgba(246,130,31,.1); color: #f8a35a; }
-.cf-state.busy { background: var(--accent-soft, rgba(124,92,255,.12)); }
+.cf-state.busy { background: color-mix(in srgb, var(--a1) 14%, transparent); }
 .cf-state.bad { background: rgba(239,68,68,.12); color: #f87171; }
 .cf-state .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
 .cf-state.wait .dot { animation: cfpulse 1.4s ease-out infinite; }

@@ -137,9 +137,9 @@ const failedLogos = new Set();
 function avatar(a, cls = '') {
   const addr = String(a?.address || '').toLowerCase(), s = String(a?.name || addr || '?').trim();
   let hsh = 0; for (const ch of (addr || s)) hsh = (hsh * 31 + ch.charCodeAt(0)) | 0;
-  const h1 = Math.abs(hsh) % 360;
+  const h1 = 168 + Math.abs(hsh) % 62;   // teal → indigo, to stay with the ocean palette
   const letter = ([...s.replace(/^["'(]+/, '')][0] || '?').toUpperCase();
-  const box = h('div', { class: 'avatar ' + cls, style: { '--h1': h1, '--h2': (h1 + 45) % 360 } }, h('span', { text: letter }));
+  const box = h('div', { class: 'avatar ' + cls, style: { '--h1': h1, '--h2': h1 + 14 } }, h('span', { text: letter }));
   const dom = addr.split('@')[1];
   if (dom && localStorage.getItem('sm-logos') !== '0' && !failedLogos.has(dom) && dom !== S.me?.domain) {
     const img = new Image(); img.alt = ''; img.decoding = 'async';
@@ -168,19 +168,19 @@ function dayGroup(ts) {
   if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'Earlier this month';
   return d.toLocaleDateString([], { month: 'long', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
 }
-const aliasChip = a => { let x = 0; for (const c of a) x = (x * 31 + c.charCodeAt(0)) | 0; return h('span', { class: 'chip acc', style: { '--h': Math.abs(x) % 360 }, text: '@' + a.split('@')[0], title: a }); };
+const aliasChip = a => { let x = 0; for (const c of a) x = (x * 31 + c.charCodeAt(0)) | 0; return h('span', { class: 'chip acc', style: { '--h': 168 + Math.abs(x) % 62 }, text: '@' + a.split('@')[0], title: a }); };
 function copyText(t) { navigator.clipboard?.writeText(t).then(() => toast('Copied'), () => toast('Copy failed', { bad: true })); }
 
 // ============================================================== state ====
 const S = { me: null, folders: [], aliases: [], view: 'mail', folder: 'inbox', alias: '', q: '', items: [], total: 0, offset: 0, sel: new Set(), open: null, msg: null, images: new Set(), mono: {}, loading: false };
 const FOLDER_ICON = { inbox: 'inbox', starred: 'star', sent: 'send', drafts: 'draft', archive: 'archive', spam: 'spam', trash: 'trash' };
 const theme = () => localStorage.getItem('sm-theme') || 'auto';
-const ACCENTS = { violet: ['#6d5efc', '#a855f7', '#ec4899'], ocean: ['#0ea5e9', '#6366f1', '#22d3ee'], emerald: ['#10b981', '#06b6d4', '#84cc16'], sunset: ['#f97316', '#ef4444', '#ec4899'], rose: ['#e11d48', '#db2777', '#a855f7'], gold: ['#f59e0b', '#f97316', '#eab308'] };
+const ACCENTS = { abyss: ['#3b82f6', '#1e3a8a', '#0e7490'], lagoon: ['#0ea5e9', '#0c4a6e', '#14b8a6'], steel: ['#64748b', '#1e293b', '#334155'], emerald: ['#10b981', '#065f46', '#0e7490'], indigo: ['#6366f1', '#312e81', '#1e40af'], amber: ['#f59e0b', '#9a3412', '#b45309'] };
 function applyTheme() {
   const t = theme(), dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
   const root = document.documentElement;
   root.dataset.theme = dark ? 'dark' : 'light';
-  const a = ACCENTS[localStorage.getItem('sm-accent')] || ACCENTS.violet;
+  const a = ACCENTS[localStorage.getItem('sm-accent')] || ACCENTS.abyss;
   ['--a1', '--a2', '--a3'].forEach((k, i) => root.style.setProperty(k, a[i]));
   root.dataset.density = localStorage.getItem('sm-density') || 'comfortable';
 }
@@ -1061,7 +1061,7 @@ async function pageSettings() {
     h('div', { class: 'card' }, h('h2', {}, icon('palette'), 'Appearance'), h('p', { class: 'sub', text: 'Saved in this browser.' }),
       h('div', { class: 'form' },
         h('div', { class: 'f' }, 'Theme', segPick([['auto', 'Match device'], ['light', 'Light'], ['dark', 'Dark']], theme(), v => { localStorage.setItem('sm-theme', v); applyTheme(); renderNav(); })),
-        h('div', { class: 'f' }, 'Accent', h('div', { class: 'swatches' }, Object.entries(ACCENTS).map(([k, c]) => h('button', { class: 'swatch' + ((localStorage.getItem('sm-accent') || 'violet') === k ? ' on' : ''), title: k[0].toUpperCase() + k.slice(1), style: { background: `linear-gradient(135deg,${c[0]},${c[1]} 55%,${c[2]})` },
+        h('div', { class: 'f' }, 'Accent', h('div', { class: 'swatches' }, Object.entries(ACCENTS).map(([k, c]) => h('button', { class: 'swatch' + ((ACCENTS[localStorage.getItem('sm-accent')] ? localStorage.getItem('sm-accent') : 'abyss') === k ? ' on' : ''), title: k[0].toUpperCase() + k.slice(1), style: { background: `linear-gradient(135deg,${c[0]},${c[1]} 55%,${c[2]})` },
           onclick: e => { localStorage.setItem('sm-accent', k); applyTheme(); $$('.swatch').forEach(x => x.classList.remove('on')); e.currentTarget.classList.add('on'); } })))),
         h('div', { class: 'f' }, 'Message list', segPick([['comfortable', 'Comfortable'], ['compact', 'Compact']], localStorage.getItem('sm-density') || 'comfortable', v => { localStorage.setItem('sm-density', v); applyTheme(); })),
         h('label', { class: 'row check' }, h('input', { type: 'checkbox', checked: localStorage.getItem('sm-logos') !== '0', onchange: e => { localStorage.setItem('sm-logos', e.target.checked ? '1' : '0'); toast(e.target.checked ? 'Sender logos on' : 'Sender logos off — initials only'); } }),

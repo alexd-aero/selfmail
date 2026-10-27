@@ -26,7 +26,7 @@ sudo ./setup.sh
 - **Catch-all addresses**: anything@yourdomain arrives in your mailbox, and the sidebar groups mail by the address it was sent to — handy for giving every website its own address. You can also send *from* any of them
 - New mail appears instantly (no refreshing), with optional desktop notifications
 - Search with `from:`, `to:`, `subject:` and `has:attachment`
-- Light and dark mode, six accent colours, comfortable or compact lists; works on phones
+- Light and dark mode in a deep navy-and-ocean palette (five more accents to choose from), comfortable or compact lists; works on phones
 
 **Setup and health, in plain language**
 - **Domain & DNS** lists every record you need with copy buttons, and checks each one against public DNS
