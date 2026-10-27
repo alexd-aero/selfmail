@@ -209,19 +209,34 @@ function shell() {
 
 function renderNav() {
   const nav = $('#nav'); if (!nav) return;
-  const link = (href, ic, label, n, on, cls = '') => h('a', { class: `it ${cls} ${on ? 'on' : ''}`, href, onclick: () => $('#shell').classList.remove('navopen') }, icon(ic), h('span', { class: 't', text: label }), n ? h('span', { class: 'n', text: n }) : null);
+  const link = (href, ic, label, n, on, cls = '') => h('a', { class: `it ${cls} ${on ? 'on' : ''}`, href, title: label, onclick: () => $('#shell').classList.remove('navopen') }, icon(ic), h('span', { class: 't', text: label }), n ? h('span', { class: 'n', text: n }) : null);
   const f = id => S.folders.find(x => x.id === id) || { total: 0, unread: 0 };
   const mail = S.view === 'mail';
+  // keep the scroll position and the address filter across refreshes
+  const oldScroll = $('.nav-scroll', nav)?.scrollTop || 0, oldList = $('.addr-list', nav)?.scrollTop || 0;
+  const oldFilter = $('.addr-filter input', nav), hadFocus = oldFilter && document.activeElement === oldFilter;
+  const open = localStorage.getItem('sm-addr-open') === '1';
+  const q = S.addrQ || '';
+  const aliases = S.aliases.filter(a => !q || a.address.includes(q.toLowerCase()));
+  const unreadAll = S.aliases.reduce((n, a) => n + (a.unread || 0), 0);
+  const filter = h('label', { class: 'addr-filter' }, icon('search'), h('input', { type: 'search', placeholder: 'Find an address', value: q, oninput: e => { S.addrQ = e.target.value; renderNav(); } }));
+  const section = S.aliases.length ? h('div', { class: 'addr' + (open ? ' open' : '') },
+    h('button', { class: 'addr-head', 'aria-expanded': String(open), onclick: () => { localStorage.setItem('sm-addr-open', open ? '0' : '1'); renderNav(); if (!open) requestAnimationFrame(() => $('#nav .addr')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); } },
+      h('span', { class: 'chev', html: '<svg viewBox="0 0 24 24" class="i"><path d="m9 6 6 6-6 6"/></svg>' }), h('span', { class: 'grow', text: 'Addresses' }),
+      unreadAll ? h('span', { class: 'n u', text: unreadAll }) : null, h('span', { class: 'n', text: S.aliases.length })),
+    open ? h('div', { class: 'addr-body' },
+      S.aliases.length > 6 ? filter : null,
+      h('div', { class: 'addr-list' }, aliases.length ? aliases.map(a => link(`#/a/${encodeURIComponent(a.address)}`, 'at', a.address.split('@')[0], a.unread || '', mail && S.alias === a.address, 'alias')) : h('div', { class: 'addr-none', text: 'No address matches' }))) : null) : null;
   nav.replaceChildren(
     h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('unread')), 'selfmail'),
     h('button', { class: 'btn pri compose-btn', onclick: () => compose() }, icon('pen'), 'Compose'),
-    ...['inbox', 'starred', 'sent', 'drafts', 'archive', 'spam', 'trash'].map(id => {
-      const x = f(id); const n = id === 'inbox' || id === 'spam' ? (x.unread || '') : id === 'drafts' ? (x.total || '') : '';
-      return link(`#/f/${id}`, FOLDER_ICON[id], S.folders.find(y => y.id === id)?.name || id, n, mail && !S.alias && S.folder === id);
-    }),
-    link('#/f/all', 'all', 'All mail', '', mail && !S.alias && S.folder === 'all'),
-    S.aliases.length ? h('h6', { text: 'Sent to' }) : null,
-    ...S.aliases.slice(0, 30).map(a => link(`#/a/${encodeURIComponent(a.address)}`, 'at', a.address.split('@')[0], a.unread || '', mail && S.alias === a.address, 'alias')),
+    h('div', { class: 'nav-scroll' },
+      ...['inbox', 'starred', 'sent', 'drafts', 'archive', 'spam', 'trash'].map(id => {
+        const x = f(id); const n = id === 'inbox' || id === 'spam' ? (x.unread || '') : id === 'drafts' ? (x.total || '') : '';
+        return link(`#/f/${id}`, FOLDER_ICON[id], S.folders.find(y => y.id === id)?.name || id, n, mail && !S.alias && S.folder === id);
+      }),
+      link('#/f/all', 'all', 'All mail', '', mail && !S.alias && S.folder === 'all'),
+      section),
     h('div', { class: 'foot' },
       link('#/domain', 'globe', 'Domain & DNS', '', S.view === 'domain'),
       link('#/status', 'pulse', 'Server status', '', S.view === 'status'),
@@ -229,6 +244,9 @@ function renderNav() {
       h('div', { class: 'me' }, avatar({ name: S.me.user }), h('div', { class: 'grow' }, h('b', { text: S.me.user }), S.me.address),
         ib(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', 'Switch light / dark', () => { localStorage.setItem('sm-theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); applyTheme(); renderNav(); }),
         ib('logout', 'Sign out', async () => { await api('POST', '/api/logout').catch(() => {}); showLogin('You have been signed out.'); }))));
+  $('.nav-scroll', nav).scrollTop = oldScroll;
+  const list = $('.addr-list', nav); if (list) list.scrollTop = oldList;
+  if (hadFocus) { const i = $('.addr-filter input', nav); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
   const inbox = f('inbox').unread;
   document.title = `${inbox ? `(${inbox}) ` : ''}${S.view === 'mail' ? (S.alias || (S.folders.find(x => x.id === S.folder)?.name || 'All mail')) : { domain: 'Domain', status: 'Status', settings: 'Settings' }[S.view]} · selfmail`;
 }

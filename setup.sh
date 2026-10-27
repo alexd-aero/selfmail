@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.1.0"
+SM_VERSION="2.1.1"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
