@@ -17,6 +17,13 @@ async function publicIp() {
 }
 
 async function unit(name) { const r = await run('systemctl', ['is-active', name], { timeout: 5000 }); return r.out.trim() || 'unknown'; }
+/** selfmail's own Cloudflare tunnel, if it has one: 'n/a' when none is configured or the service doesn't exist. */
+async function tunnelState(c) {
+  if (c.mode !== 'relay' || !c.tunnelUnit) return 'n/a';
+  const r = await run('systemctl', ['show', '-p', 'LoadState', '--value', c.tunnelUnit], { timeout: 5000 });
+  if (r.out.trim() === 'not-found') return 'n/a';
+  return unit(c.tunnelUnit);
+}
 
 function tcp(host, port, ms = 6000) {
   return new Promise(resolve => {
@@ -56,14 +63,14 @@ async function webhook(c) {
 async function overview() {
   const c = cfg.load();
   const [postfix, opendkim, tunnel, smtp, ip, q, hook] = await Promise.all([
-    unit('postfix'), unit('opendkim'), c.mode === 'relay' ? unit(c.tunnelUnit || 'selfmail-tunnel') : Promise.resolve('n/a'),
+    unit('postfix'), unit('opendkim'), tunnelState(c),
     send.probe(8000), publicIp(), queue(), webhook(c),
   ]);
   const [ptr, out25] = await Promise.all([reverse(ip), c.outbound?.active === 'relay' ? Promise.resolve(null) : outbound.direct25()]);
   let disk = null;
   try { const s = fs.statfsSync(c.mailroot); disk = { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; } catch (e) { /* old node */ }
   return {
-    services: { postfix, opendkim, tunnel, tunnelUnit: c.tunnelUnit || 'selfmail-tunnel' },
+    services: { postfix, opendkim, tunnel, tunnelUnit: c.tunnelUnit || '' },
     smtp: { ...smtp, detail: send.explain(smtp) },
     ip: { current: ip, configured: c.publicIp, matches: !ip || ip === c.publicIp },
     ptr, outbound25: out25, queue: q, webhook: hook, disk,

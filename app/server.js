@@ -266,7 +266,7 @@ const publicSettings = c => ({
   publicIp: c.publicIp, autoIp: c.autoIp, mode: c.mode, webhookUrl: c.webhookUrl, webhookEndpoint: cfg.webhookEndpoint(c), hasWebhookKey: !!c.webhookKey,
   outbound: { mode: c.outbound.mode, host: c.outbound.host, port: c.outbound.port, using: c.outbound.using || 0, active: c.outbound.active || 'direct', user: c.outbound.user, spfInclude: c.outbound.spfInclude || '', notes: c.outbound.notes || [], checked: c.outbound.checked || 0, probes: c.outbound.probes || [] },
   agreement: c.agreement || null,
-  dmarcPolicy: c.dmarcPolicy, dmarcRua: c.dmarcRua, tunnelUnit: c.tunnelUnit || 'selfmail-tunnel', listen: c.listen, port: c.port,
+  dmarcPolicy: c.dmarcPolicy, dmarcRua: c.dmarcRua, tunnelUnit: c.tunnelUnit || '', listen: c.listen, port: c.port,
   cloudflare: { connected: !!c.cloudflare.token, zone: c.cloudflare.zoneName, account: c.cloudflare.account },
 });
 route('GET', '/api/settings', (req, res) => json(res, 200, publicSettings(cfg.load())));
@@ -386,7 +386,8 @@ route('GET', '/api/log', async (req, res, p, s, url) => {
 route('POST', '/api/services/restart', async (req, res) => {
   const b = await body(req);
   if (!['postfix', 'opendkim', 'tunnel'].includes(b.name)) fail(400, 'Unknown service.');
-  const r = await root('restart', [b.name === 'tunnel' ? (cfg.load().tunnelUnit || 'selfmail-tunnel') : b.name]);
+  if (b.name === 'tunnel' && !cfg.load().tunnelUnit) fail(400, 'This server has no tunnel of its own (mail comes in another way, e.g. through Aegis).');
+  const r = await root('restart', [b.name === 'tunnel' ? cfg.load().tunnelUnit : b.name]);
   if (r.code) fail(500, (r.err || r.out).trim());
   json(res, 200, { ok: true });
 });

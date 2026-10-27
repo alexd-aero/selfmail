@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.4.0"
+SM_VERSION="2.4.1"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
@@ -216,7 +216,7 @@ health_timer() {
 # Restarts selfmail or its tunnel when the mail drop-off stops answering (a hung
 # tunnel keeps its process alive, so systemd alone can't notice).
 NODE="$(cat /opt/selfmail/.node 2>/dev/null || command -v node)"
-read -r SECRET PORT HOST UNIT < <("$NODE" -e 'const c=JSON.parse(require("fs").readFileSync("/etc/selfmail/config.json","utf8")); let h=""; try{h=new URL(c.webhookUrl).hostname}catch(e){} console.log(c.inboundSecret||"-", c.port||8088, h||"-", c.tunnelUnit||"selfmail-tunnel")' 2>/dev/null)
+read -r SECRET PORT HOST UNIT < <("$NODE" -e 'const c=JSON.parse(require("fs").readFileSync("/etc/selfmail/config.json","utf8")); let h=""; try{h=new URL(c.webhookUrl).hostname}catch(e){} console.log(c.inboundSecret||"-", c.port||8088, h||"-", c.tunnelUnit||"-")' 2>/dev/null)
 [ -n "${SECRET:-}" ] && [ "$SECRET" != - ] || exit 0
 D=/run/selfmail-health; mkdir -p "$D"
 strike() { local n; n=$(( $(cat "$D/$1" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/$1"; echo "$n"; }
@@ -224,7 +224,7 @@ if curl -fsS --max-time 10 "http://127.0.0.1:$PORT/inbound/$SECRET/ping" | grep 
 else n=$(strike local); logger -t selfmail-health "app did not answer (strike $n)"; [ "$n" -ge 2 ] && { systemctl restart selfmail; rm -f "$D/local"; }; exit 0; fi
 [ "$HOST" != - ] || exit 0
 if curl -fsS --max-time 25 "https://$HOST/inbound/$SECRET/ping" | grep -q '"ready":true'; then rm -f "$D/public"
-else n=$(strike public); logger -t selfmail-health "public URL $HOST did not answer (strike $n)"; [ "$n" -ge 2 ] && { systemctl restart "$UNIT"; rm -f "$D/public"; }; fi
+else n=$(strike public); logger -t selfmail-health "public URL $HOST did not answer (strike $n)"; [ "$n" -ge 2 ] && { [ "$UNIT" != - ] && systemctl cat "$UNIT" >/dev/null 2>&1 && systemctl restart "$UNIT"; rm -f "$D/public"; }; fi
 HEALTH
   chmod 755 /usr/local/bin/selfmail-health
   printf '[Unit]\nDescription=Check that selfmail can receive mail\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/selfmail-health\n' > /etc/systemd/system/selfmail-health.service
@@ -509,6 +509,12 @@ if [ "$MODE_RUN" = update ]; then
   ensure_user
   PORT="$(node_cfg 'c.port||8088')"; MAILBOX="$(node_cfg c.mailbox)"
   migrate_v1
+  # a tunnel that was never made (or was removed) isn't selfmail's tunnel
+  tu="$(node_cfg 'c.tunnelUnit||""')"
+  if [ -n "$tu" ] && ! systemctl cat "$tu" >/dev/null 2>&1; then
+    "$NODE" -e 'const fs=require("fs"),f=process.argv[1],c=JSON.parse(fs.readFileSync(f,"utf8"));c.tunnelUnit="";fs.writeFileSync(f+".tmp",JSON.stringify(c,null,2)+"\n",{mode:0o600});fs.renameSync(f+".tmp",f)' "$ETC/config.json"
+    chown vmail:vmail "$ETC/config.json" 2>/dev/null || true; ok "forgot the tunnel $tu (it doesn't exist on this machine)"
+  fi
   deploy_app; install_service; copy_dkim_public
   [ -f /etc/systemd/system/selfmail-health.timer ] && health_timer ""
   sign_agreement 0
@@ -606,7 +612,7 @@ ok "$MAILROOT/$DOMAIN/$MAILBOX"
 configure_postfix
 configure_opendkim
 [ "$TUNNEL" = yes ] && setup_tunnel
-write_config "$(printf '{"domain":"%s","mxhost":"%s","mailbox":"%s","selector":"%s","publicIp":"%s","mode":"%s","webhookUrl":"%s","port":%s,"tunnelUnit":"%s"}' "$DOMAIN" "$MXHOST" "$MAILBOX" "$SELECTOR" "$PUBLIC_IP" "$INMODE" "$WEBHOOK_URL" "$PORT" "${TUNNEL_UNIT:-selfmail-tunnel}")"
+write_config "$(printf '{"domain":"%s","mxhost":"%s","mailbox":"%s","selector":"%s","publicIp":"%s","mode":"%s","webhookUrl":"%s","port":%s,"tunnelUnit":"%s"}' "$DOMAIN" "$MXHOST" "$MAILBOX" "$SELECTOR" "$PUBLIC_IP" "$INMODE" "$WEBHOOK_URL" "$PORT" "${TUNNEL_UNIT:-}")"
 deploy_app
 install_service
 copy_dkim_public

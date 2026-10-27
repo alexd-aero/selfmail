@@ -2,7 +2,7 @@
   "spec": 1,
   "id": "selfmail",
   "name": "selfmail",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Your own mail server inside your dashboard: Postfix and OpenDKIM set up for you, a modern web mail for every domain you own, one-click Cloudflare DNS, and live health — queue, delivery, DNS, blocklists — with warnings on the bell. Bulwark can email you about attack waves through it.",
   "author": "Alexd Aero",
   "homepage": "https://github.com/alexd-aero/selfmail",
