@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.3.0"
+SM_VERSION="2.4.0"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
@@ -38,7 +38,7 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required."
 # ------------------------------------------------------------------- flags --
 MODE_RUN=install; YES=0
 DOMAIN=""; MXHOST=""; MAILBOX=""; SELECTOR=""; INMODE=""; PUBLIC_IP=""; WEBHOOK_URL=""; TUNNEL=""; TUNNEL_HOST=""
-UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""; AGREE_NAME=""; HOST_KEY_FILE=""
+UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""; AGREE_NAME=""; HOST_KEY_FILE=""; NO_AEGIS=0; ADVANCED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) MODE_RUN=update ;; --adopt) MODE_RUN=adopt ;; --yes|-y) YES=1 ;;
@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
     --mode) INMODE="$2"; shift ;; --public-ip) PUBLIC_IP="$2"; shift ;; --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --tunnel) TUNNEL="$2"; shift ;; --tunnel-host) TUNNEL_HOST="$2"; TUNNEL=${TUNNEL:-yes}; shift ;; --tunnel-unit) TUNNEL_UNIT="$2"; shift ;;
     --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --password-file) UI_PASS="$(head -c 512 "$2" | tr -d '\n')"; shift ;;
-    --host-key-file) HOST_KEY_FILE="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;; --agree) AGREE_NAME="$2"; shift ;;
+    --host-key-file) HOST_KEY_FILE="$2"; shift ;; --no-aegis) NO_AEGIS=1 ;; --advanced) ADVANCED=1 ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;; --agree) AGREE_NAME="$2"; shift ;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
@@ -411,6 +411,39 @@ sign_agreement() { # required for a fresh install; offered on --update/--adopt (
   ok "signed by $AGREE_NAME"
 }
 
+# ---- Aegis × Burrow on this machine: selfmail becomes its addon by itself ----
+AG_SOCK=""; AG_USER=""; AG_HOME=""; AG_VER=""; AG_HOST=""; AG_MODE=""
+jget() { "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const v=JSON.parse(s)[process.argv[1]];process.stdout.write(v==null?"":String(v))}catch(e){}})' "$1"; }
+find_aegis() {
+  [ "$NO_AEGIS" = 1 ] && return 1
+  [ -f "$SRC/aegis/hook.mjs" ] || return 1
+  local j; j="$("$NODE" "$SRC/aegis/hook.mjs" find 2>/dev/null || true)"
+  AG_SOCK="$(printf '%s' "$j" | jget socket)"; [ -n "$AG_SOCK" ] || return 1
+  AG_USER="$(printf '%s' "$j" | jget user)"; AG_HOME="$(printf '%s' "$j" | jget home)"; AG_VER="$(printf '%s' "$j" | jget version)"
+  AG_HOST="$(printf '%s' "$j" | jget mainHost)"; AG_MODE="$(printf '%s' "$j" | jget mode)"
+  [ -n "$AG_USER" ] && [ -n "$AG_HOME" ]
+}
+aegis_prepare() { # adds the addon and makes the gate's key; HOST_KEY_FILE then links selfmail to it
+  [ -n "$AG_SOCK" ] || return 0
+  step "Aegis × Burrow"
+  local j; j="$("$NODE" "$SRC/aegis/hook.mjs" prepare --socket "$AG_SOCK" --user "$AG_USER" --home "$AG_HOME" 2>/dev/null || true)"
+  local k; k="$(printf '%s' "$j" | jget keyFile)"
+  if [ -n "$k" ]; then HOST_KEY_FILE="$k"; ok "found Aegis $AG_VER (user $AG_USER) — selfmail joins it as an addon"
+  else warn "couldn't add the addon to Aegis: $(printf '%s' "$j" | jget error)"; AG_SOCK=""; fi
+}
+aegis_webhook() { # relay mode: Aegis gives the relay a lasting public address (only /inbound is served there)
+  [ -n "$AG_SOCK" ] && [ "$INMODE" = relay ] && [ -z "$WEBHOOK_URL" ] || return 0
+  local j u; j="$("$NODE" "$SRC/aegis/hook.mjs" webhook --socket "$AG_SOCK" --port "$PORT" 2>/dev/null || true)"; u="$(printf '%s' "$j" | jget url)"
+  if [ -n "$u" ]; then WEBHOOK_URL="$u"; write_config "$(printf '{"webhookUrl":"%s"}' "$u")"; chown vmail:vmail "$ETC/config.json"; chmod 600 "$ETC/config.json"; ok "incoming mail arrives through Aegis: $u"
+  else warn "$(printf '%s' "$j" | jget skip)$(printf '%s' "$j" | jget error) — set the public URL later in Settings → Receiving"; fi
+}
+aegis_finish() {
+  [ -n "$AG_SOCK" ] || return 0
+  local j; j="$("$NODE" "$SRC/aegis/hook.mjs" finish --socket "$AG_SOCK" --user "$AG_USER" --home "$AG_HOME" --port "$PORT" || true)"
+  if [ "$(printf '%s' "$j" | jget linked)" = true ]; then ok "selfmail is an addon of your Aegis — open it from the dashboard's home (/__gate/selfmail/)"
+  else warn "$(printf '%s' "$j" | jget why) Finish it with:  $(printf '%s' "$j" | jget manual)"; fi
+}
+
 # An Aegis × Burrow gate hosting selfmail (the addon) signs its requests with this key.
 link_host() {
   [ -n "$HOST_KEY_FILE" ] || return 0
@@ -424,10 +457,10 @@ ensure_login() {
   if SELFMAIL_ETC="$ETC" "$NODE" -e 'process.exit(Object.keys(JSON.parse(require("fs").readFileSync(process.env.SELFMAIL_ETC+"/users.json","utf8"))).length?0:1)' 2>/dev/null && [ -z "$UI_PASS" ]; then
     ok "existing web login kept"; return
   fi
-  ask UI_USER "Username for the web mail" "${MAILBOX:-admin}"
+  [ "$ADVANCED" = 1 ] && ask UI_USER "Username for the web mail" "${MAILBOX:-admin}"
   UI_USER="${UI_USER:-${MAILBOX:-admin}}"
   [[ "$UI_USER" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || die "Usernames can use letters, numbers and . _ - @"
-  if [ -z "$UI_PASS" ] && [ "$INTERACTIVE" = 1 ]; then
+  if [ -z "$UI_PASS" ] && [ "$INTERACTIVE" = 1 ] && [ "$ADVANCED" = 1 ]; then
     while :; do
       printf '  Password (10+ characters): '; read -rs UI_PASS </dev/tty; echo
       printf '  Again: '; read -rs p2 </dev/tty; echo
@@ -479,9 +512,11 @@ if [ "$MODE_RUN" = update ]; then
   deploy_app; install_service; copy_dkim_public
   [ -f /etc/systemd/system/selfmail-health.timer ] && health_timer ""
   sign_agreement 0
+  [ -z "$HOST_KEY_FILE" ] && find_aegis && aegis_prepare
   link_host
   ensure_login
   start_and_check
+  aegis_finish
   ok "updated to $SM_VERSION — settings and mail untouched"
   exit 0
 fi
@@ -505,35 +540,52 @@ if [ "$MODE_RUN" = adopt ]; then
   chown -R vmail:vmail "$MAILROOT/$DOMAIN" 2>/dev/null || true
   deploy_app; install_service; copy_dkim_public
   [ "$INMODE" = relay ] && [ -n "$WEBHOOK_URL" ] && health_timer ""
-  sign_agreement 0; link_host; ensure_login; start_and_check; summary
+  sign_agreement 0; [ -z "$HOST_KEY_FILE" ] && find_aegis && aegis_prepare; link_host; ensure_login; start_and_check; aegis_finish; summary
   exit 0
 fi
 
 # ----- fresh install -----
-step "A few questions"
-[ "$INTERACTIVE" = 1 ] && say "  Press Enter to accept the ${D}[default]${Z}."
-while :; do ask DOMAIN "Mail domain — the part after the @ (e.g. mail.example.com)"; is_domain "$DOMAIN" && break; warn "that isn't a domain"; DOMAIN=""; [ "$INTERACTIVE" = 1 ] || die "--domain is required"; done
-ask MXHOST "This server's host name" "mx.${DOMAIN#*.}"
-ask MAILBOX "Your mailbox name (before the @)" "me"
-ask SELECTOR "DKIM selector" "mail"
-ask PORT "Web mail port" "8088"
-if [ -z "$INMODE" ]; then
-  say ""; say "  How should incoming mail reach this machine?"
-  say "    ${B}1) relay${Z}  — a free relay (Forward Email) receives on port 25 and posts mail here over HTTPS."
-  say "                Works on any home connection; no port forwarding. ${G}Recommended.${Z}"
-  say "    ${B}2) direct${Z} — this machine receives on port 25 itself (needs port 25 open to the internet)."
-  ask CHOICE "Choose 1 or 2" "1"; [ "${CHOICE:-1}" = 2 ] && INMODE=direct || INMODE=relay
+find_aegis || true
+zone_of() { local d="$1" n; n="$(awk -F. '{print NF}' <<<"$d")"; [ "$n" -le 2 ] && echo "$d" || echo "${d#*.}"; }
+GUESS=""; [ -n "$AG_HOST" ] && GUESS="mail.$(zone_of "$AG_HOST")"
+[ -z "$GUESS" ] && h="$(hostname -d 2>/dev/null || true)" && [ -n "$h" ] && is_domain "$h" && GUESS="mail.$h"
+free_port() { local p="$1"; while ss -Hltn "sport = :$p" 2>/dev/null | grep -q .; do p=$((p+1)); done; echo "$p"; }
+step "Your mail domain"
+if [ "$ADVANCED" = 1 ]; then
+  [ "$INTERACTIVE" = 1 ] && say "  Press Enter to accept the ${D}[default]${Z}."
+  while :; do ask DOMAIN "Mail domain — the part after the @ (e.g. mail.example.com)" "$GUESS"; is_domain "$DOMAIN" && break; warn "that isn't a domain"; DOMAIN=""; [ "$INTERACTIVE" = 1 ] || die "--domain is required"; done
+  ask MXHOST "This server's host name" "mx.$(zone_of "$DOMAIN")"
+  ask MAILBOX "Your mailbox name (before the @)" "me"
+  ask SELECTOR "DKIM selector" "mail"
+  ask PORT "Web mail port" "$(free_port 8088)"
+  if [ -z "$INMODE" ]; then
+    say ""; say "  How should incoming mail reach this machine?"
+    say "    ${B}1) relay${Z}  — a free relay (Forward Email) receives on port 25 and posts mail here over HTTPS. ${G}Recommended.${Z}"
+    say "    ${B}2) direct${Z} — this machine receives on port 25 itself (needs port 25 open to the internet)."
+    ask CHOICE "Choose 1 or 2" "1"; [ "${CHOICE:-1}" = 2 ] && INMODE=direct || INMODE=relay
+  fi
+else
+  # the simple way: one question; everything else is worked out (pass --advanced for every choice)
+  [ "$INTERACTIVE" = 1 ] && say "  The part after the @ in your new address. Press Enter for ${D}[the suggestion]${Z}."
+  while :; do ask DOMAIN "Mail domain" "$GUESS"; is_domain "$DOMAIN" && break; warn "that isn't a domain (for example mail.example.com)"; DOMAIN=""; [ "$INTERACTIVE" = 1 ] || die "--domain is required"; done
+  MXHOST="${MXHOST:-mx.$(zone_of "$DOMAIN")}"; MAILBOX="${MAILBOX:-me}"; SELECTOR="${SELECTOR:-mail}"; PORT="${PORT:-$(free_port 8088)}"; INMODE="${INMODE:-relay}"
 fi
+# where incoming mail comes in: Aegis gives the relay an address by itself; otherwise offer a Cloudflare Tunnel
 if [ "$INMODE" = relay ] && [ -z "$WEBHOOK_URL" ] && [ -z "$TUNNEL" ]; then
-  say ""; say "  Relay mode needs a public HTTPS address for this machine. The installer can make one with a free"
-  say "  Cloudflare Tunnel (your domain must be on Cloudflare). Only the mail drop-off is reachable through it."
-  ask TUNNEL "Create a Cloudflare Tunnel now? (y/n)" "y"
+  if [ -n "$AG_SOCK" ] && [ "$AG_MODE" = domain ]; then TUNNEL=no
+  else
+    say ""; say "  Incoming mail needs a public HTTPS address for this machine. The installer can make one with a free"
+    say "  Cloudflare Tunnel (your domain must be on Cloudflare). Only the mail drop-off is reachable through it."
+    ask TUNNEL "Create a Cloudflare Tunnel now? (y/n)" "y"
+  fi
 fi
-case "${TUNNEL:-n}" in y|Y|yes) TUNNEL=yes; ask TUNNEL_HOST "Public host name for the tunnel" "mailhook.${DOMAIN#*.}" ;; *) TUNNEL=no; [ "$INMODE" = relay ] && ask WEBHOOK_URL "Public HTTPS URL that reaches this machine (blank = later)" "" ;; esac
+case "${TUNNEL:-n}" in y|Y|yes) TUNNEL=yes; ask TUNNEL_HOST "Public host name for the tunnel" "mailhook.$(zone_of "$DOMAIN")" ;; *) TUNNEL=no ;; esac
 DETECTED="$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
-ask PUBLIC_IP "Public IPv4 address" "$DETECTED"
-say ""; say "  ${B}$MAILBOX@$DOMAIN${Z} (and every other @$DOMAIN address) · host $MXHOST · $INMODE mode"
-if [ "$INTERACTIVE" = 1 ]; then ask GO "Install now? (y/n)" "y"; case "$GO" in y|Y|yes) ;; *) die "Stopped — nothing was changed." ;; esac; fi
+PUBLIC_IP="${PUBLIC_IP:-$DETECTED}"
+[ "$ADVANCED" = 1 ] && ask PUBLIC_IP "Public IPv4 address" "$DETECTED"
+say ""; say "  ${B}$MAILBOX@$DOMAIN${Z} (and every other @$DOMAIN address)"
+say "  ${D}mail host $MXHOST · public IP ${PUBLIC_IP:-unknown} · web mail on port $PORT · incoming via ${INMODE}${AG_SOCK:+ · joins Aegis $AG_VER}${Z}"
+if [ "$INTERACTIVE" = 1 ]; then ask GO "Install now? (Y/n)" "y"; case "$GO" in y|Y|yes|"") ;; *) die "Stopped — nothing was changed." ;; esac; fi
 
 mkdir -p "$ETC"; [ -f "$ETC/config.json" ] || echo "{}" > "$ETC/config.json"
 sign_agreement 1
@@ -559,8 +611,11 @@ deploy_app
 install_service
 copy_dkim_public
 [ "$TUNNEL" = yes ] && health_timer "$TUNNEL_HOST"
+[ -z "$HOST_KEY_FILE" ] && aegis_prepare
 link_host
+aegis_webhook
 ensure_login
 systemctl enable postfix >/dev/null 2>&1 || true
 start_and_check
+aegis_finish
 summary
