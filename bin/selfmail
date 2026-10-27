@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# selfmail — day-to-day commands
+set -uo pipefail
+APP=/opt/selfmail; ETC=/etc/selfmail; VAR=/var/lib/selfmail
+NODE="$(cat "$APP/.node" 2>/dev/null || command -v node)"
+if [ -t 1 ]; then B=$'\e[1m'; G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; Z=$'\e[0m'; else B= G= R= Y= Z=; fi
+need_root() { [ "$(id -u)" -eq 0 ] || { echo "Run with sudo:  sudo selfmail $*"; exit 1; }; }
+cfg() { "$NODE" -e "const c=JSON.parse(require('fs').readFileSync('$ETC/config.json','utf8')); const v=($1); process.stdout.write(v==null?'':String(v))" 2>/dev/null; }
+state() { local s; s="$(systemctl is-active "$1" 2>/dev/null)"; [ "$s" = active ] && printf '%s●%s %s' "$G" "$Z" "running" || printf '%s●%s %s' "$R" "$Z" "${s:-missing}"; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  status)
+    printf '%sselfmail%s %s\n' "$B" "$Z" "$("$NODE" -p "require('$APP/app/package.json').version" 2>/dev/null)"
+    printf '  web mail   %s\n' "$(state selfmail)"
+    printf '  postfix    %s\n' "$(state postfix)"
+    printf '  opendkim   %s\n' "$(state opendkim)"
+    u="$(cfg 'c.tunnelUnit||""')"; [ -n "$u" ] && [ "$(cfg c.mode)" = relay ] && printf '  tunnel     %s (%s)\n' "$(state "$u")" "$u"
+    printf '  address    %s@%s\n' "$(cfg c.mailbox)" "$(cfg c.domain)"
+    "$0" url
+    ;;
+  url)
+    p="$(cfg 'c.port||8088')"
+    for ip in $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.)' | head -3); do echo "  open       http://$ip:$p"; done
+    ;;
+  start|stop|restart)
+    need_root "$cmd"; systemctl "$cmd" selfmail && echo "selfmail: $cmd ok"
+    ;;
+  logs)
+    exec journalctl -u selfmail --no-pager -n 100 "$@"
+    ;;
+  passwd)
+    need_root passwd; u="${1:-}"; [ -n "$u" ] || read -rp "Username: " u
+    [[ "$u" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo "Use letters, numbers, . _ - or @"; exit 1; }
+    read -rsp "New password (10+ characters): " p1; echo; read -rsp "Again: " p2; echo
+    [ "$p1" = "$p2" ] || { echo "They don't match."; exit 1; }; [ ${#p1} -ge 10 ] || { echo "Too short."; exit 1; }
+    printf '%s' "$p1" | SELFMAIL_ETC="$ETC" SELFMAIL_VAR="$VAR" "$NODE" -e 'let p="";process.stdin.on("data",d=>p+=d).on("end",()=>require(process.argv[1]+"/lib/auth").setPassword(process.argv[2],p))' "$APP/app" "$u"
+    chown vmail:vmail "$ETC/users.json"; chmod 600 "$ETC/users.json"
+    echo "Password set for $u."
+    ;;
+  users)
+    need_root users; "$NODE" -e 'for (const k of Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")))) console.log("  "+k)' "$ETC/users.json"
+    ;;
+  deluser)
+    need_root deluser; "$NODE" -e 'const fs=require("fs"),f=process.argv[1],u=JSON.parse(fs.readFileSync(f,"utf8")); if(!(process.argv[2] in u)){console.log("No such user.");process.exit(1)} delete u[process.argv[2]]; fs.writeFileSync(f,JSON.stringify(u,null,2))' "$ETC/users.json" "${1:-}" && echo "Removed ${1:-}."
+    ;;
+  update)
+    need_root update
+    src="$(cat "$APP/.source" 2>/dev/null)"
+    if [ -n "$src" ] && [ -d "$src/.git" ]; then
+      owner="$(stat -c %U "$src")"
+      echo "Pulling the latest version into $src"
+      if [ "$owner" != root ]; then sudo -u "$owner" git -C "$src" pull --ff-only || exit 1; else git -C "$src" pull --ff-only || exit 1; fi
+      exec "$src/setup.sh" --update "$@"
+    fi
+    tmp="$(mktemp -d)"; git clone -q --depth 1 https://github.com/alexd-aero/selfmail "$tmp/selfmail" || exit 1
+    exec "$tmp/selfmail/setup.sh" --update "$@"
+    ;;
+  doctor)
+    need_root doctor; exec "$APP/doctor.sh" "$@"
+    ;;
+  uninstall)
+    need_root uninstall; exec "$APP/uninstall.sh" "$@"
+    ;;
+  *)
+    cat <<HELP
+${B}selfmail${Z} — commands
+  selfmail status           what's running, and where to open the web mail
+  selfmail logs [-f]        the web app's log
+  sudo selfmail passwd NAME set (or create) a web login
+  sudo selfmail users       list web logins            sudo selfmail deluser NAME
+  sudo selfmail restart     restart the web app
+  sudo selfmail update      install the newest version (keeps settings and mail)
+  sudo selfmail doctor      find and fix common Postfix / OpenDKIM problems
+  sudo selfmail uninstall   remove selfmail (asks before deleting mail)
+HELP
+    ;;
+esac

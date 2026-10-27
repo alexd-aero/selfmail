@@ -1,0 +1,14 @@
+{
+  "name": "selfmail",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Self-hosted mail server with a modern web mail client, for home servers that cannot open port 25",
+  "main": "server.js",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node server.js", "test": "node --test test/" },
+  "dependencies": {
+    "mailparser": "^3.7.1",
+    "nodemailer": "^6.9.16"
+  }
+}

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# selfmail-root — the ONLY commands the web app may run as root (via sudo).
+# Every argument is validated here; nothing is passed to a shell.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+die() { echo "selfmail-root: $*" >&2; exit 2; }
+host_ok() { [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; }
+
+op="${1:-}"; shift || true
+case "$op" in
+  log)
+    n="${1:-300}"; [[ "$n" =~ ^[0-9]{1,4}$ ]] || die "bad line count"
+    for f in /var/log/mail.log /var/log/maillog; do
+      if [ -s "$f" ]; then exec tail -n "$n" "$f"; fi
+    done
+    exec journalctl --no-pager -o short -n "$n" SYSLOG_FACILITY=2
+    ;;
+  queue-flush)
+    exec postqueue -f
+    ;;
+  queue-delete)
+    id="${1:-}"; [[ "$id" =~ ^([A-F0-9]{6,20}|ALL)$ ]] || die "bad queue id"
+    exec postsuper -d "$id"
+    ;;
+  relay-set)
+    host="${1:-}"; port="${2:-}"; user="${3:-}"
+    host_ok "$host" || die "bad host"
+    [[ "$port" =~ ^(25|465|587|2525)$ ]] || die "bad port"
+    [[ "$user" =~ ^[^[:space:]:]{1,200}$ ]] || die "bad user"
+    IFS= read -r pass || true
+    if [ -z "$pass" ]; then
+      # keep the stored password when only host/port/user changed
+      pass="$(awk -v k="[$host]:" 'index($0, k)==1 {r=substr($0, index($0, " ")+1); print substr(r, index(r, ":")+1)}' /etc/postfix/sasl_passwd 2>/dev/null | head -1)"
+      [ -n "$pass" ] || die "no password given"
+    fi
+    [[ "$pass" != *$'\n'* ]] || die "bad password"
+    printf '[%s]:%s %s:%s\n' "$host" "$port" "$user" "$pass" > /etc/postfix/sasl_passwd
+    chmod 600 /etc/postfix/sasl_passwd
+    postmap /etc/postfix/sasl_passwd
+    chmod 600 /etc/postfix/sasl_passwd.db 2>/dev/null || true
+    wrapper=no; [ "$port" = 465 ] && wrapper=yes
+    postconf -e "relayhost = [$host]:$port" "smtp_sasl_auth_enable = yes" "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd" \
+      "smtp_sasl_security_options = noanonymous" "smtp_sasl_tls_security_options = noanonymous" "smtp_tls_security_level = encrypt" \
+      "smtp_tls_wrappermode = $wrapper"
+    postfix reload >/dev/null 2>&1 || systemctl restart postfix
+    echo "relay set to [$host]:$port"
+    ;;
+  relay-clear)
+    postconf -e "relayhost =" "smtp_sasl_auth_enable = no" "smtp_tls_security_level = may" "smtp_tls_wrappermode = no"
+    rm -f /etc/postfix/sasl_passwd /etc/postfix/sasl_passwd.db
+    postfix reload >/dev/null 2>&1 || systemctl restart postfix
+    echo "sending directly"
+    ;;
+  hostname-set)
+    name="${1:-}"; host_ok "$name" || die "bad host name"
+    postconf -e "myhostname = $name"
+    postfix reload >/dev/null 2>&1 || true
+    echo "myhostname = $name"
+    ;;
+  restart)
+    unit="${1:-}"
+    [[ "$unit" =~ ^(postfix|opendkim|selfmail-tunnel|cloudflared[A-Za-z0-9@._-]*)$ ]] || die "not allowed: $unit"
+    systemctl restart "$unit"
+    echo "restarted $unit"
+    ;;
+  dkim-public)
+    d="${1:-}"; s="${2:-}"
+    host_ok "$d" || die "bad domain"; [[ "$s" =~ ^[A-Za-z0-9._-]{1,63}$ ]] || die "bad selector"
+    exec cat "/etc/opendkim/keys/$d/$s.txt"
+    ;;
+  *)
+    die "unknown operation: ${op:-<none>}"
+    ;;
+esac
