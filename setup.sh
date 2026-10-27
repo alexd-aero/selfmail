@@ -5,6 +5,7 @@
 #   sudo ./setup.sh                 fresh install (asks a few questions)
 #   sudo ./setup.sh --update        install new code over an existing install (keeps settings and mail)
 #   sudo ./setup.sh --adopt         put the app on a server whose Postfix/OpenDKIM are already set up
+#                                   (--secret KEEPS an existing webhook secret so the relay keeps delivering)
 #
 # Non-interactive install: pass answers as flags, e.g.
 #   sudo ./setup.sh --yes --domain mail.example.com --host mx.example.com --mailbox me \
@@ -36,14 +37,14 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required."
 # ------------------------------------------------------------------- flags --
 MODE_RUN=install; YES=0
 DOMAIN=""; MXHOST=""; MAILBOX=""; SELECTOR=""; INMODE=""; PUBLIC_IP=""; WEBHOOK_URL=""; TUNNEL=""; TUNNEL_HOST=""
-UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""
+UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) MODE_RUN=update ;; --adopt) MODE_RUN=adopt ;; --yes|-y) YES=1 ;;
     --domain) DOMAIN="$2"; shift ;; --host) MXHOST="$2"; shift ;; --mailbox) MAILBOX="$2"; shift ;; --selector) SELECTOR="$2"; shift ;;
     --mode) INMODE="$2"; shift ;; --public-ip) PUBLIC_IP="$2"; shift ;; --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --tunnel) TUNNEL="$2"; shift ;; --tunnel-host) TUNNEL_HOST="$2"; TUNNEL=${TUNNEL:-yes}; shift ;; --tunnel-unit) TUNNEL_UNIT="$2"; shift ;;
-    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --port) PORT="$2"; shift ;;
+    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
@@ -441,10 +442,13 @@ if [ "$MODE_RUN" = adopt ]; then
   PORT="${PORT:-8088}"
   [ -n "$PUBLIC_IP" ] || PUBLIC_IP="$(curl -4 -fsS --max-time 8 https://api.ipify.org || true)"
   INMODE="${INMODE:-relay}"
-  write_config "$(printf '{"domain":"%s","mxhost":"%s","mailbox":"%s","selector":"%s","publicIp":"%s","mode":"%s","webhookUrl":"%s","port":%s,"tunnelUnit":"%s"}' "$DOMAIN" "$MXHOST" "$MAILBOX" "$SELECTOR" "$PUBLIC_IP" "$INMODE" "$WEBHOOK_URL" "$PORT" "${TUNNEL_UNIT:-selfmail-tunnel}")"
+  [[ -z "$SECRET" || "$SECRET" =~ ^[A-Za-z0-9_-]{12,}$ ]] || die "--secret may only use letters, numbers, - and _"
+  write_config "$(printf '{"domain":"%s","mxhost":"%s","mailbox":"%s","selector":"%s","publicIp":"%s","mode":"%s","webhookUrl":"%s","port":%s,"tunnelUnit":"%s","inboundSecret":"%s"}' "$DOMAIN" "$MXHOST" "$MAILBOX" "$SELECTOR" "$PUBLIC_IP" "$INMODE" "$WEBHOOK_URL" "$PORT" "${TUNNEL_UNIT:-selfmail-tunnel}" "$SECRET")"
   ok "$MAILBOX@$DOMAIN · host $MXHOST · DKIM selector $SELECTOR"
   chown -R vmail:vmail "$MAILROOT/$DOMAIN" 2>/dev/null || true
-  deploy_app; install_service; copy_dkim_public; ensure_login; start_and_check; summary
+  deploy_app; install_service; copy_dkim_public
+  [ "$INMODE" = relay ] && [ -n "$WEBHOOK_URL" ] && health_timer ""
+  ensure_login; start_and_check; summary
   exit 0
 fi
 
