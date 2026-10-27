@@ -58,7 +58,8 @@ function explain(p) {
 async function send(b) {
   const c = cfg.load();
   const fromAddr = String(b.from || cfg.address(c)).trim().toLowerCase();
-  if (!fromAddr.endsWith('@' + c.domain)) throw Object.assign(new Error(`You can only send from an @${c.domain} address (otherwise DKIM can't sign it).`), { status: 400 });
+  const fromDomain = cfg.domainOf(fromAddr, c);
+  if (!fromDomain) throw Object.assign(new Error(`You can only send from an address at ${cfg.domains(c).map(d => '@' + d).join(', ')} (otherwise DKIM can't sign it).`), { status: 400 });
   const to = splitAddrs(b.to), cc = splitAddrs(b.cc), bcc = splitAddrs(b.bcc);
   const rcpts = [...to, ...cc, ...bcc];
   if (!rcpts.length) throw Object.assign(new Error('Add at least one recipient.'), { status: 400 });
@@ -84,7 +85,7 @@ async function send(b) {
   };
   // Same Message-ID and Date for both builds: recipients get a copy WITHOUT the Bcc
   // header; only our own Sent copy keeps it.
-  mail.messageId = `<${require('crypto').randomBytes(12).toString('hex')}@${c.domain}>`;
+  mail.messageId = `<${require('crypto').randomBytes(12).toString('hex')}@${fromDomain}>`;
   mail.date = new Date();
   const raw = await new MailComposer(mail).compile().build();
   const forSent = new MailComposer(mail).compile(); forSent.keepBcc = true;
@@ -103,7 +104,7 @@ async function send(b) {
     try { await alt.sendMail({ envelope, raw }); via = 'sendmail'; response = 'queued through sendmail (Postfix’s SMTP port did not answer)'; }
     catch (e2) { const p = await probe(); throw Object.assign(new Error(e2.message), { status: 502, diagnosis: explain(p) }); }
   }
-  const saved = await store.store('sent', rawSent, 'S');
+  const saved = b.noSentCopy ? { id: '' } : await store.store('sent', rawSent, 'S');
   if (b.answering) await store.mark([b.answering], 'R', '').catch(() => {});
   return { ok: true, via, response, id: saved.id };
 }

@@ -21,32 +21,73 @@ async function call(token, method, path, body) {
   return j;
 }
 
-/** Finds the zone that holds the mail domain (mail.example.com lives in example.com). */
-async function findZone(token, domain) {
-  const labels = domain.toLowerCase().split('.');
-  for (let i = 0; i < labels.length - 1; i++) {
-    const name = labels.slice(i).join('.');
-    const j = await call(token, 'GET', `/zones?name=${encodeURIComponent(name)}&per_page=5`);
-    if (j.result?.length) return { id: j.result[0].id, name: j.result[0].name, account: j.result[0].account?.name || '' };
+/** Every zone the token can see: [{ id, name, account }]. */
+async function listZones(token) {
+  const out = [];
+  for (let page = 1; page <= 20; page++) {
+    const j = await call(token, 'GET', `/zones?per_page=50&page=${page}`);
+    out.push(...(j.result || []).map(z => ({ id: z.id, name: z.name.toLowerCase(), account: z.account?.name || '' })));
+    if (!j.result_info || page >= j.result_info.total_pages) break;
   }
+  return out;
+}
+/** The zone that holds a domain (mail.example.com lives in example.com). */
+const zoneOf = (zones, domain) => zones.filter(z => domain === z.name || domain.endsWith('.' + z.name)).sort((a, b) => b.name.length - a.name.length)[0] || null;
+
+async function findZone(token, domain) {
+  const z = zoneOf(await listZones(token), domain.toLowerCase());
+  if (z) return z;
   throw Object.assign(new Error(`None of the zones this token can see contain ${domain}. Make sure the token’s “Zone Resources” include that domain.`), { status: 400 });
 }
 
+/** Map each of our domains to a zone of the token's. */
+function mapZones(c, zones) {
+  const map = {};
+  for (const d of cfg.domains(c)) { const z = zoneOf(zones, d); if (z) map[d] = { id: z.id, name: z.name }; }
+  return map;
+}
+
+/**
+ * Checks the token and remembers it. Returns which of our domains it covers and the
+ * zones it could also manage (so the page can offer to add them as mail domains).
+ */
 async function connect(token) {
   token = String(token || '').trim();
   if (!/^[A-Za-z0-9_\-]{30,}$/.test(token)) throw Object.assign(new Error('That doesn’t look like a Cloudflare API token.'), { status: 400 });
   const c = cfg.load();
-  const zone = await findZone(token, c.domain);
-  await call(token, 'GET', `/zones/${zone.id}/dns_records?per_page=1`);   // proves DNS read access
-  cfg.update(x => { x.cloudflare = { token, zoneId: zone.id, zoneName: zone.name, account: zone.account }; });
-  return zone;
+  const zones = await listZones(token);
+  if (!zones.length) throw Object.assign(new Error('Cloudflare accepted the token, but it can’t see any domain. Give it “Zone · Zone · Read” and “Zone · DNS · Edit” for your domains.'), { status: 400 });
+  const map = mapZones(c, zones);
+  for (const z of Object.values(map)) await call(token, 'GET', `/zones/${z.id}/dns_records?per_page=1`);   // proves DNS access
+  const main = map[c.domain] || null;
+  cfg.update(x => { x.cloudflare = { token, zoneId: main?.id || '', zoneName: main?.name || '', account: zones.find(z => z.id === main?.id)?.account || zones[0].account, zones: map }; });
+  return { zone: main ? { id: main.id, name: main.name, account: zones.find(z => z.id === main.id)?.account || '' } : null, covers: Object.keys(map), zones: zones.map(z => z.name), suggest: suggestions(cfg.load(), zones) };
 }
-function disconnect() { cfg.update(x => { x.cloudflare = { token: '', zoneId: '', zoneName: '', account: '' }; x.autoIp = false; }); }
+/** Zones the token sees that hold none of our domains yet. */
+function suggestions(c, zones) {
+  const ours = cfg.domains(c);
+  return zones.filter(z => !ours.some(d => d === z.name || d.endsWith('.' + z.name))).map(z => ({ zone: z.name, account: z.account }));
+}
+async function zones() {
+  const c = cfg.load();
+  if (!c.cloudflare.token) throw Object.assign(new Error('Cloudflare is not connected.'), { status: 400 });
+  const all = await listZones(c.cloudflare.token);
+  const map = mapZones(c, all);
+  cfg.update(x => { x.cloudflare.zones = map; });
+  return { zones: all.map(z => z.name), covers: Object.keys(map), suggest: suggestions(c, all) };
+}
+/** Re-map after domains change (quietly; a domain outside the token's zones simply isn't covered). */
+async function remap() { const c = cfg.load(); if (c.cloudflare.token) await zones().catch(() => {}); }
+function zoneFor(c, domain) {
+  if (domain === c.domain && c.cloudflare.zoneId) return { id: c.cloudflare.zoneId, name: c.cloudflare.zoneName };
+  return (c.cloudflare.zones || {})[domain] || null;
+}
+function disconnect() { cfg.update(x => { x.cloudflare = { token: '', zoneId: '', zoneName: '', account: '', zones: {} }; x.autoIp = false; }); }
 
-async function existing(c) {
+async function existing(c, zoneId) {
   const out = []; let page = 1;
   for (;;) {
-    const j = await call(c.cloudflare.token, 'GET', `/zones/${c.cloudflare.zoneId}/dns_records?per_page=500&page=${page}`);
+    const j = await call(c.cloudflare.token, 'GET', `/zones/${zoneId}/dns_records?per_page=500&page=${page}`);
     out.push(...j.result);
     if (!j.result_info || page >= j.result_info.total_pages) break;
     page++;
@@ -61,11 +102,14 @@ const txt = r => dns.unq(r.content || '');
  * Plan: [{ key, action: 'create'|'update'|'delete'|'ok'|'keep', type, name, content, priority?, before?, id? , why }]
  * `only` limits the plan to some record keys (used by the automatic IP updater).
  */
-async function plan(only = null) {
+async function plan(only = null, domain = null) {
   const c = cfg.load();
+  domain = domain || c.domain;
   if (!c.cloudflare.token) throw Object.assign(new Error('Cloudflare is not connected.'), { status: 400 });
-  const want = (await dns.desired(c)).filter(r => !only || only.includes(r.key));
-  const have = await existing(c);
+  const zone = zoneFor(c, domain);
+  if (!zone) throw Object.assign(new Error(`The Cloudflare token can’t manage ${domain}. Give it access to that zone, or add the records by hand.`), { status: 400 });
+  const want = (await dns.desired(c, domain)).filter(r => !only || only.includes(r.key));
+  const have = await existing(c, zone.id);
   const ops = [];
   const at = (type, name) => have.filter(r => r.type === type && same(r.name, name));
 
@@ -105,25 +149,27 @@ async function plan(only = null) {
       for (const x of rest) ops.push({ key: r.key, action: 'delete', id: x.id, type: 'TXT', name: r.name, content: txt(x), why: r.key === 'spf' ? 'A second SPF record makes receivers ignore SPF' : 'Duplicate record' });
     }
   }
-  return { zone: c.cloudflare.zoneName, ops };
+  return { zone: zone.name, domain, ops };
 }
 
-async function apply(only = null) {
+async function apply(only = null, domain = null) {
   const c = cfg.load();
-  const { ops } = await plan(only);
+  domain = domain || c.domain;
+  const { ops } = await plan(only, domain);
+  const zid = zoneFor(c, domain).id;
   const results = [];
   for (const o of ops) {
     if (o.action === 'ok' || o.action === 'keep' || o.action === 'skip') { results.push({ ...o, done: o.action !== 'skip' }); continue; }
     const body = { type: o.type, name: o.name, content: o.content, ttl: 1, ...(o.type === 'MX' ? { priority: o.priority } : {}), ...(o.type === 'A' ? { proxied: false } : {}), comment: 'selfmail' };
     try {
-      if (o.action === 'create') await call(c.cloudflare.token, 'POST', `/zones/${c.cloudflare.zoneId}/dns_records`, body);
-      else if (o.action === 'update') await call(c.cloudflare.token, 'PUT', `/zones/${c.cloudflare.zoneId}/dns_records/${o.id}`, body);
-      else if (o.action === 'delete') await call(c.cloudflare.token, 'DELETE', `/zones/${c.cloudflare.zoneId}/dns_records/${o.id}`);
+      if (o.action === 'create') await call(c.cloudflare.token, 'POST', `/zones/${zid}/dns_records`, body);
+      else if (o.action === 'update') await call(c.cloudflare.token, 'PUT', `/zones/${zid}/dns_records/${o.id}`, body);
+      else if (o.action === 'delete') await call(c.cloudflare.token, 'DELETE', `/zones/${zid}/dns_records/${o.id}`);
       results.push({ ...o, done: true });
     } catch (e) { results.push({ ...o, done: false, error: e.message }); }
   }
-  if (results.some(r => r.key === 'spf' && r.done)) cfg.update(x => { x.spfIp = x.publicIp; });
+  if (domain === c.domain && results.some(r => r.key === 'spf' && r.done)) cfg.update(x => { x.spfIp = x.publicIp; });
   return { results, ok: results.every(r => r.done) };
 }
 
-module.exports = { connect, disconnect, plan, apply, findZone };
+module.exports = { connect, disconnect, plan, apply, findZone, zones, remap, zoneFor, listZones };

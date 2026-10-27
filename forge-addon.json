@@ -1,0 +1,55 @@
+{
+  "spec": 1,
+  "id": "selfmail",
+  "name": "selfmail",
+  "version": "2.3.0",
+  "description": "Your own mail server inside your dashboard: Postfix and OpenDKIM set up for you, a modern web mail for every domain you own, one-click Cloudflare DNS, and live health — queue, delivery, DNS, blocklists — with warnings on the bell. Bulwark can email you about attack waves through it.",
+  "author": "Alexd Aero",
+  "homepage": "https://github.com/alexd-aero/selfmail",
+  "license": "MIT",
+  "logo": "docs/logo.svg",
+  "platforms": ["burrow"],
+  "requires": {
+    "burrow": ">=2.33.0",
+    "root": "Installs and configures Postfix and OpenDKIM, and runs the web mail as a system service.",
+    "os": ["linux"],
+    "commands": ["bash", "curl", "sudo"]
+  },
+  "scripts": {
+    "detect": "weft/detect.sh",
+    "install": "weft/install.sh",
+    "update": "weft/install.sh",
+    "uninstall": "weft/uninstall.sh",
+    "status": "weft/status.sh"
+  },
+  "actions": [
+    { "id": "flush", "label": "Retry the queue", "script": "weft/flush.sh" },
+    { "id": "restart", "label": "Restart mail", "script": "weft/restart.sh", "root": true },
+    { "id": "doctor", "label": "Fix common problems", "script": "weft/doctor.sh", "root": true, "confirm": "Runs selfmail's doctor as root: it can restart Postfix and OpenDKIM, fix their permissions, and stop a container that holds port 25." }
+  ],
+  "settings": [
+    { "key": "DOMAIN", "label": "Mail domain", "type": "text", "help": "Only for a new install: the part after the @, e.g. mail.example.com. Add more domains later in the web mail. A selfmail already on this machine is linked as it is." },
+    { "key": "MAILBOX", "label": "Mailbox name", "type": "text", "default": "me", "help": "The part before the @. Every other address at your domains lands in the same inbox." },
+    { "key": "INBOUND", "label": "Incoming mail", "type": "select", "default": "relay", "options": ["relay", "direct"], "help": "relay: a free relay receives on port 25 and posts mail here (works on home connections). direct: this machine receives on port 25 itself." },
+    { "key": "AGREE_NAME", "label": "Your full name", "type": "text", "help": "Signs selfmail's responsible-use agreement (needed for a new install): you're responsible for this server and for following your internet provider's terms." },
+    { "key": "WEB_PASSWORD", "label": "Web mail password (optional)", "type": "password", "help": "For opening the web mail on its own address, outside this dashboard. Leave empty to make one up; the dashboard never needs it." }
+  ],
+  "burrow": { "extension": "aegis/extension.mjs", "ui": "aegis/panel.js" },
+  "links": [
+    { "label": "README", "url": "https://github.com/alexd-aero/selfmail#readme" }
+  ],
+  "update_card": {
+    "theme": "blue",
+    "icon": "spark",
+    "badge": "MAIL",
+    "title": "{name} {version}",
+    "tagline": "Every domain you own in one inbox, inside your dashboard.",
+    "highlights": [
+      "Add as many domains as you like; each signs its own mail",
+      "Cloudflare finds your other domains and asks before adding them",
+      "Live mail health on the Burrow page, warnings on the bell",
+      "Bulwark can email you when an attack wave starts"
+    ],
+    "button": "Update to {version}"
+  }
+}

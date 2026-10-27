@@ -11,19 +11,22 @@ const { root } = require('./util');
 const pub = new Resolver({ timeout: 4000, tries: 2 });
 try { pub.setServers(['1.1.1.1', '8.8.8.8', '9.9.9.9']); } catch (e) { /* keep system */ }
 
-let dkimCache = { key: '', at: 0 };
-/** Public DKIM key as one "v=DKIM1; k=rsa; p=..." string. */
-async function dkimRecord(c = cfg.load()) {
-  const k = `${c.domain}/${c.selector}`;
-  if (dkimCache.key === k && dkimCache.val && Date.now() - dkimCache.at < 600e3) return dkimCache.val;
+const dkimCache = new Map();
+/** Public DKIM key of one of our domains as one "v=DKIM1; k=rsa; p=..." string. */
+async function dkimRecord(c = cfg.load(), domain = c.domain) {
+  const k = `${domain}/${c.selector}`, hit = dkimCache.get(k);
+  if (hit && hit.val && Date.now() - hit.at < 600e3) return hit.val;
   let txt = '';
-  try { txt = fs.readFileSync(path.join(cfg.ETC, 'dkim.txt'), 'utf8'); } catch (e) { /* ask root */ }
-  if (!txt) { const r = await root('dkim-public', [c.domain, c.selector]); if (r.code === 0) txt = r.out; }
+  if (domain === c.domain) try { txt = fs.readFileSync(path.join(cfg.ETC, 'dkim.txt'), 'utf8'); } catch (e) { /* ask root */ }
+  if (!txt) { const r = await root('dkim-public', [domain, c.selector]); if (r.code === 0) txt = r.out; }
   const parts = (txt.match(/"([^"]*)"/g) || []).map(s => s.slice(1, -1));
   const val = (parts.length ? parts.join('') : txt.trim()).replace(/\s+/g, ' ').replace(/;\s*/g, '; ').trim();
-  dkimCache = { key: k, val, at: Date.now() };
+  dkimCache.set(k, { val, at: Date.now() });
   return val;
 }
+
+const unq = s => String(s).replace(/^"|"$/g, '').replace(/"\s*"/g, '');
+const host = s => String(s).replace(/\.$/, '').toLowerCase();
 
 const RELAY_MX = [{ host: 'mx1.forwardemail.net', prio: 10 }, { host: 'mx2.forwardemail.net', prio: 20 }];
 
@@ -39,28 +42,29 @@ function spfValue(c, existing = '') {
   return ['v=spf1', ...mech, all].join(' ');
 }
 
-/** The full list of records, with plain-language notes. */
-async function desired(c = cfg.load()) {
+/** The full list of records for one of our domains (the main one by default), with plain-language notes. */
+async function desired(c = cfg.load(), domain = c.domain) {
   const recs = [];
-  if (c.mxhost && c.publicIp) recs.push({ key: 'a', type: 'A', name: c.mxhost, content: c.publicIp, note: 'This server’s address. On Cloudflare it must be grey-cloud (“DNS only”).' });
+  const D = { ...c, domain };
+  // The mail host's own address record belongs with the domain that holds that name (or the main one).
+  const holder = cfg.domains(c).filter(d => host(c.mxhost) === d || host(c.mxhost).endsWith('.' + d)).sort((a, b) => b.length - a.length)[0] || c.domain;
+  if (c.mxhost && c.publicIp && domain === holder) recs.push({ key: 'a', type: 'A', name: c.mxhost, content: c.publicIp, note: 'This server’s address. On Cloudflare it must be grey-cloud (“DNS only”).' });
   if (c.mode === 'relay') {
-    for (const [i, m] of RELAY_MX.entries()) recs.push({ key: 'mx' + (i + 1), type: 'MX', name: c.domain, content: m.host, priority: m.prio, note: i ? 'Backup relay.' : 'Forward Email takes mail on port 25 for you and posts it to this server.' });
-    recs.push({ key: 'hook', type: 'TXT', name: c.domain, content: 'forward-email=' + (cfg.webhookEndpoint(c) || 'https://YOUR-PUBLIC-URL/inbound/SECRET'), note: 'Tells the relay where to deliver. Keep it separate from the SPF record.' });
+    for (const [i, m] of RELAY_MX.entries()) recs.push({ key: 'mx' + (i + 1), type: 'MX', name: D.domain, content: m.host, priority: m.prio, note: i ? 'Backup relay.' : 'Forward Email takes mail on port 25 for you and posts it to this server.' });
+    recs.push({ key: 'hook', type: 'TXT', name: D.domain, content: 'forward-email=' + (cfg.webhookEndpoint(c) || 'https://YOUR-PUBLIC-URL/inbound/SECRET'), note: 'Tells the relay where to deliver. Keep it separate from the SPF record.' });
   } else {
-    recs.push({ key: 'mx1', type: 'MX', name: c.domain, content: c.mxhost, priority: 10, note: 'Mail is delivered straight to this server on port 25.' });
+    recs.push({ key: 'mx1', type: 'MX', name: D.domain, content: c.mxhost, priority: 10, note: 'Mail is delivered straight to this server on port 25.' });
   }
-  recs.push({ key: 'spf', type: 'TXT', name: c.domain, content: spfValue(c), note: 'Allows this server to send for @' + c.domain + '.' });
-  const dk = await dkimRecord(c);
-  recs.push({ key: 'dkim', type: 'TXT', name: `${c.selector}._domainkey.${c.domain}`, content: dk || '(no DKIM key found on this server)', note: 'Lets receivers check that mail really came from you.' });
-  recs.push({ key: 'dmarc', type: 'TXT', name: `_dmarc.${c.domain}`, content: `v=DMARC1; p=${c.dmarcPolicy || 'none'}${c.dmarcRua ? `; rua=mailto:${c.dmarcRua}` : ''}`, note: 'Tells receivers what to do with mail that fails the checks.' });
+  recs.push({ key: 'spf', type: 'TXT', name: D.domain, content: spfValue(c), note: 'Allows this server to send for @' + D.domain + '.' });
+  const dk = await dkimRecord(c, domain);
+  recs.push({ key: 'dkim', type: 'TXT', name: `${c.selector}._domainkey.${D.domain}`, content: dk || '(no DKIM key found on this server)', note: 'Lets receivers check that mail really came from you.' });
+  recs.push({ key: 'dmarc', type: 'TXT', name: `_dmarc.${D.domain}`, content: `v=DMARC1; p=${c.dmarcPolicy || 'none'}${c.dmarcRua ? `; rua=mailto:${c.dmarcRua}` : ''}`, note: 'Tells receivers what to do with mail that fails the checks.' });
   return recs;
 }
 
-const unq = s => String(s).replace(/^"|"$/g, '').replace(/"\s*"/g, '');
-const host = s => String(s).replace(/\.$/, '').toLowerCase();
 
-async function check(c = cfg.load()) {
-  const recs = await desired(c);
+async function check(c = cfg.load(), domain = c.domain) {
+  const recs = await desired(c, domain);
   const out = [];
   for (const r of recs) {
     const row = { ...r, status: 'missing', found: '', detail: '' };

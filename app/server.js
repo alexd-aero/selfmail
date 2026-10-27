@@ -20,6 +20,7 @@ const events = require('./lib/events');
 const outbound = require('./lib/outbound');
 const isp = require('./lib/isp');
 const agreement = require('./lib/agreement');
+const gate = require('./lib/host');
 const { root, token, safeEqual, isDomain, isEmail, isIPv4 } = require('./lib/util');
 
 const VERSION = require('./package.json').version;
@@ -119,7 +120,7 @@ route('GET', '/api/state', async (req, res, p, s) => {
   const c = cfg.load();
   json(res, 200, {
     user: s.user, version: VERSION, address: cfg.address(c), domain: c.domain, mailbox: c.mailbox, fromName: c.fromName, signature: c.signature,
-    mode: c.mode, configured: !!(c.domain && c.mxhost), cloudflare: !!c.cloudflare.token,
+    mode: c.mode, configured: !!(c.domain && c.mxhost), cloudflare: !!c.cloudflare.token, domains: cfg.domains(c), hosted: !!s.host,
     agreement: !!(c.agreement && c.agreement.version >= agreement.VERSION),
   });
 });
@@ -131,7 +132,7 @@ const AV_DIR = path.join(cfg.VAR, 'avatars');
 const PERSONAL = new Set(['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'pm.me', 'gmx.com', 'gmx.net', 'mail.com', 'yandex.ru', 'yandex.com', 'zoho.com', 'fastmail.com', 'hey.com', 'tutanota.com', 'qq.com', '163.com', 'mail.ru']);
 route('GET', '/api/avatar/:domain', async (req, res, p) => {
   const d = isp.registrable(String(p.domain).toLowerCase());
-  if (!isDomain(d) || PERSONAL.has(d) || d === isp.registrable(cfg.load().domain)) return json(res, 404, { error: 'none' });
+  if (!isDomain(d) || PERSONAL.has(d) || cfg.domains().some(x => isp.registrable(x) === d)) return json(res, 404, { error: 'none' });
   const base = path.join(AV_DIR, d);
   const send = buf => { res.writeHead(200, { ...SEC, 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=604800' }); res.end(buf); };
   try { return send(fs.readFileSync(base + '.png')); } catch (e) { /* not cached */ }
@@ -148,7 +149,7 @@ route('GET', '/api/avatar/:domain', async (req, res, p) => {
 route('GET', '/api/contacts', async (req, res) => {
   const c = cfg.load(), rows = await store.all(), map = new Map();
   const add = (a, at, w) => {
-    if (!a || !a.address || a.address.endsWith('@' + c.domain)) return;
+    if (!a || !a.address || cfg.domainOf(a.address, c)) return;
     const x = map.get(a.address) || { name: '', address: a.address, score: 0, last: 0 };
     if (a.name && !x.name) x.name = a.name; x.score += w; x.last = Math.max(x.last, at); map.set(a.address, x);
   };
@@ -168,7 +169,7 @@ route('GET', '/api/messages', async (req, res, p, s, url) => {
 route('GET', '/api/messages/:id', async (req, res, p, s, url) => {
   const raw = await md.read(p.id); if (!raw) fail(404, 'This message no longer exists.');
   const c = cfg.load();
-  const { info, parsed } = await mime.view(raw, c.domain);
+  const { info, parsed } = await mime.view(raw, cfg.domains(c));
   let loc = await md.locate(p.id);
   if (loc?.folder === 'drafts') info.html = parsed.html || '';
   if (url.searchParams.get('peek') !== '1' && loc && !loc.flags.includes('S')) { loc = await md.setFlags(p.id, 'S', ''); events.emit('changed'); }
@@ -176,7 +177,7 @@ route('GET', '/api/messages/:id', async (req, res, p, s, url) => {
 });
 route('GET', '/api/messages/:id/frame', async (req, res, p, s, url) => {
   const raw = await md.read(p.id); if (!raw) fail(404, 'Gone.');
-  const { parsed } = await mime.view(raw, cfg.load().domain);
+  const { parsed } = await mime.view(raw, cfg.domains());
   const images = url.searchParams.get('images') === '1';
   const mono = url.searchParams.has('mono') ? url.searchParams.get('mono') === '1' : null;
   const f = mime.frameDoc(parsed, { images, mono });
@@ -317,14 +318,52 @@ route('GET', '/api/account/sessions', (req, res, p, s) => json(res, 200, auth.li
 route('POST', '/api/account/signout-others', (req, res, p, s) => { auth.destroyOthers(s.id); json(res, 200, { ok: true }); });
 
 // -------------------------------------------------------------------- dns --
-route('GET', '/api/dns', async (req, res) => json(res, 200, await dns.desired()));
-route('GET', '/api/dns/check', async (req, res) => json(res, 200, await dns.check()));
+// Which of our domains a request means (?domain= or a body field); the main one by default.
+function pickDomain(v) {
+  const c = cfg.load(), d = String(v || '').toLowerCase().trim();
+  if (!d) return c.domain;
+  if (!cfg.domains(c).includes(d)) fail(404, `${d} isn’t one of this server’s domains.`);
+  return d;
+}
+route('GET', '/api/dns', async (req, res, p, s, url) => json(res, 200, await dns.desired(cfg.load(), pickDomain(url.searchParams.get('domain')))));
+route('GET', '/api/dns/check', async (req, res, p, s, url) => json(res, 200, await dns.check(cfg.load(), pickDomain(url.searchParams.get('domain')))));
 route('POST', '/api/cloudflare/connect', async (req, res) => {
   const b = await body(req, 10e3);
-  try { json(res, 200, { ok: true, zone: await cloudflare.connect(b.token) }); } catch (e) { fail(e.status || 502, e.message); }
+  try { const r = await cloudflare.connect(b.token); gate.forgetDns(); json(res, 200, { ok: true, ...r }); } catch (e) { fail(e.status || 502, e.message); }
 });
-route('GET', '/api/cloudflare/plan', async (req, res) => { try { json(res, 200, await cloudflare.plan()); } catch (e) { fail(e.status || 502, e.message); } });
-route('POST', '/api/cloudflare/apply', async (req, res) => { try { json(res, 200, await cloudflare.apply()); } catch (e) { fail(e.status || 502, e.message); } });
+route('GET', '/api/cloudflare/zones', async (req, res) => { try { json(res, 200, await cloudflare.zones()); } catch (e) { fail(e.status || 502, e.message); } });
+route('GET', '/api/cloudflare/plan', async (req, res, p, s, url) => { const d = pickDomain(url.searchParams.get('domain')); try { json(res, 200, await cloudflare.plan(null, d)); } catch (e) { fail(e.status || 502, e.message); } });
+route('POST', '/api/cloudflare/apply', async (req, res) => { const d = pickDomain((await body(req, 10e3)).domain); try { const r = await cloudflare.apply(null, d); gate.forgetDns(); json(res, 200, r); } catch (e) { fail(e.status || 502, e.message); } });
+
+// ---------------------------------------------------------------- domains --
+// Every domain delivers into the one mailbox (catch-all) and signs with its own DKIM key.
+function domainList(c = cfg.load()) {
+  return cfg.domains(c).map((d, i) => ({ domain: d, main: i === 0, at: (c.extraDomains.find(x => x.domain === d) || {}).at || 0,
+    address: `${c.mailbox}@${d}`, cloudflare: !!cloudflare.zoneFor(c, d) }));
+}
+route('GET', '/api/domains', (req, res) => json(res, 200, { domains: domainList() }));
+route('POST', '/api/domains', async (req, res) => {
+  const b = await body(req, 10e3), c = cfg.load();
+  const d = String(b.domain || '').toLowerCase().trim().replace(/^@/, '').replace(/\.$/, '');
+  if (!isDomain(d)) fail(400, 'That doesn’t look like a domain name (for example example.com or mail.example.com).');
+  if (cfg.domains(c).includes(d)) fail(409, `${d} is already set up.`);
+  const r = await root('domain-add', [d, c.selector, cfg.address(c)]);
+  if (r.code) fail(500, (r.err || r.out).trim() || 'Could not set up the domain.');
+  cfg.update(x => { x.extraDomains = [...x.extraDomains.filter(e => e.domain !== d), { domain: d, at: Date.now() }]; });
+  await cloudflare.remap(); gate.forgetDns();
+  events.emit('changed');
+  json(res, 200, { ok: true, domains: domainList() });
+});
+route('DELETE', '/api/domains/:d', async (req, res, p) => {
+  const c = cfg.load(), d = String(p.d).toLowerCase();
+  if (d === c.domain) fail(400, 'The main domain can’t be removed.');
+  if (!c.extraDomains.some(e => e.domain === d)) fail(404, 'Not one of this server’s domains.');
+  const r = await root('domain-remove', [d]);
+  if (r.code) fail(500, (r.err || r.out).trim() || 'Could not remove the domain.');
+  cfg.update(x => { x.extraDomains = x.extraDomains.filter(e => e.domain !== d); if (x.cloudflare.zones) delete x.cloudflare.zones[d]; });
+  gate.forgetDns();
+  json(res, 200, { ok: true, domains: domainList() });
+});
 route('POST', '/api/cloudflare/disconnect', (req, res) => { cloudflare.disconnect(); json(res, 200, { ok: true }); });
 
 // ----------------------------------------------------------------- status --
@@ -353,10 +392,23 @@ route('POST', '/api/services/restart', async (req, res) => {
 });
 route('GET', '/api/events', (req, res) => events.attach(req, res));
 
+// ------------------------------------------------------------ the gate --
+route('GET', '/health', (req, res) => json(res, 200, { app: 'selfmail', ok: true, version: VERSION }), { open: true });
+route('POST', '/api/notify', async (req, res, p, s) => {
+  if (!s.host) fail(403, 'Only apps on this machine (with the gate’s key) can send alerts.');
+  try { json(res, 200, await gate.notify(await body(req, 2e6))); } catch (e) { fail(e.status || 502, e.message); }
+});
+route('POST', '/api/host/unlink', (req, res, p, s) => {
+  if (!s.host) fail(403, 'Only the gate itself can unlink.');
+  cfg.update(x => { x.hostKey = ''; });
+  json(res, 200, { ok: true });
+});
+route('GET', '/api/host/overview', async (req, res, p, s, url) => json(res, 200, await gate.overview(url.searchParams.get('fresh') === '1')));
+
 // ---------------------------------------------------------------- statics --
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 const staticCache = new Map();
-function serveStatic(req, res, file) {
+function serveStatic(req, res, file, base = '/') {
   const fp = path.join(PUBLIC, file);
   if (!fp.startsWith(PUBLIC + path.sep)) return false;
   let hit = staticCache.get(fp);
@@ -365,6 +417,7 @@ function serveStatic(req, res, file) {
     if (file === 'index.html') hit.buf = Buffer.from(hit.buf.toString('utf8').replaceAll('{{V}}', VERSION));
     staticCache.set(fp, hit);
   }
+  if (file === 'index.html') hit = { buf: Buffer.from(hit.buf.toString('utf8').replace('<head>', `<head><base href="${base}">`)), etag: hit.etag.slice(0, -1) + base.length + '"' };
   const headers = { ...SEC, 'Content-Type': TYPES[path.extname(fp)] || 'application/octet-stream', ETag: hit.etag, 'Cache-Control': file === 'index.html' ? 'no-store' : IS_PROD ? 'public, max-age=31536000, immutable' : 'no-cache' };
   if (file === 'index.html') headers['Content-Security-Policy'] = APP_CSP;
   if (req.headers['if-none-match'] === hit.etag) { res.writeHead(304, headers); return res.end(), true; }
@@ -385,12 +438,12 @@ async function handle(req, res) {
     const p = {}; r.keys.forEach((k, i) => { p[k] = decodeURIComponent(m[i + 1]); });
     let s = null;
     if (!r.open) {
-      s = auth.get(req);
+      s = gate.isHost(req, c) ? { id: 'host', user: Object.keys(auth.users())[0] || c.mailbox, host: true } : auth.get(req);
       if (!s) return json(res, 401, { error: 'Please sign in.' });
       // Cross-site requests can't set custom headers without a preflight we never approve.
       if (req.method !== 'GET' && req.headers['x-selfmail'] !== '1') return json(res, 403, { error: 'Missing request header.' });
       // Nothing but the agreement itself until it's signed (incoming mail keeps arriving meanwhile).
-      if (!(c.agreement && c.agreement.version >= agreement.VERSION) && !['/api/state', '/api/agreement', '/api/logout', '/api/events'].includes(url.pathname)) {
+      if (!(c.agreement && c.agreement.version >= agreement.VERSION) && !['/api/state', '/api/agreement', '/api/logout', '/api/events', '/api/host/overview'].includes(url.pathname)) {
         return json(res, 403, { error: 'Please read and sign the responsible-use agreement first.', needsAgreement: true });
       }
     } else if (req.method === 'POST' && url.pathname === '/api/login' && req.headers['x-selfmail'] !== '1') {
@@ -399,7 +452,11 @@ async function handle(req, res) {
     return r.handler(req, res, p, s, url);
   }
   if (req.method === 'GET' || req.method === 'HEAD') {
-    if (url.pathname === '/' || url.pathname === '/index.html') return serveStatic(req, res, 'index.html');
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      // Under a gate's dashboard (/__gate/selfmail/) every link must stay below that path.
+      const base = String(req.headers['x-selfmail-base'] || '');
+      return serveStatic(req, res, 'index.html', gate.isHost(req, c) && /^\/[\w/-]{0,80}\/$/.test(base) ? base : '/');
+    }
     if (/^\/assets\/[\w.-]+$/.test(url.pathname) && serveStatic(req, res, url.pathname.slice(8))) return;
   }
   json(res, 404, { error: 'not found' });
@@ -431,8 +488,11 @@ async function ipWatch() {
   if (!ip || ip === c.publicIp) return;
   console.log(`public IP changed ${c.publicIp} -> ${ip}: updating DNS`);
   cfg.update(x => { x.spfIp = x.spfIp || x.publicIp; x.publicIp = ip; });
-  const r = await cloudflare.apply(['a', 'spf']).catch(e => ({ ok: false, error: e.message }));
-  console.log('DNS update: ' + (r.ok ? 'done' : (r.error || JSON.stringify(r.results?.filter(x => !x.done)))));
+  for (const d of cfg.domains()) {
+    if (!cloudflare.zoneFor(cfg.load(), d)) continue;
+    const r = await cloudflare.apply(['a', 'spf'], d).catch(e => ({ ok: false, error: e.message }));
+    console.log(`DNS update for ${d}: ` + (r.ok ? 'done' : (r.error || JSON.stringify(r.results?.filter(x => !x.done)))));
+  }
 }
 
 function listenAddrs(c) {

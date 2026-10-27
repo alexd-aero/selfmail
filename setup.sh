@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.2.1"
+SM_VERSION="2.3.0"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
@@ -38,14 +38,15 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required."
 # ------------------------------------------------------------------- flags --
 MODE_RUN=install; YES=0
 DOMAIN=""; MXHOST=""; MAILBOX=""; SELECTOR=""; INMODE=""; PUBLIC_IP=""; WEBHOOK_URL=""; TUNNEL=""; TUNNEL_HOST=""
-UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""; AGREE_NAME=""
+UI_USER=""; UI_PASS=""; PORT=""; TUNNEL_UNIT=""; SECRET=""; AGREE_NAME=""; HOST_KEY_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) MODE_RUN=update ;; --adopt) MODE_RUN=adopt ;; --yes|-y) YES=1 ;;
     --domain) DOMAIN="$2"; shift ;; --host) MXHOST="$2"; shift ;; --mailbox) MAILBOX="$2"; shift ;; --selector) SELECTOR="$2"; shift ;;
     --mode) INMODE="$2"; shift ;; --public-ip) PUBLIC_IP="$2"; shift ;; --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --tunnel) TUNNEL="$2"; shift ;; --tunnel-host) TUNNEL_HOST="$2"; TUNNEL=${TUNNEL:-yes}; shift ;; --tunnel-unit) TUNNEL_UNIT="$2"; shift ;;
-    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;; --agree) AGREE_NAME="$2"; shift ;;
+    --user) UI_USER="$2"; shift ;; --password) UI_PASS="$2"; shift ;; --password-file) UI_PASS="$(head -c 512 "$2" | tr -d '\n')"; shift ;;
+    --host-key-file) HOST_KEY_FILE="$2"; shift ;; --port) PORT="$2"; shift ;; --secret) SECRET="$2"; shift ;; --agree) AGREE_NAME="$2"; shift ;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
@@ -410,6 +411,15 @@ sign_agreement() { # required for a fresh install; offered on --update/--adopt (
   ok "signed by $AGREE_NAME"
 }
 
+# An Aegis × Burrow gate hosting selfmail (the addon) signs its requests with this key.
+link_host() {
+  [ -n "$HOST_KEY_FILE" ] || return 0
+  local k; k="$(head -c 200 "$HOST_KEY_FILE" 2>/dev/null | tr -d '\n\r ')" || true
+  [[ "$k" =~ ^[A-Za-z0-9_-]{24,128}$ ]] || die "The host key in $HOST_KEY_FILE isn't valid."
+  write_config "$(printf '{"hostKey":"%s"}' "$k")"; chown vmail:vmail "$ETC/config.json"; chmod 600 "$ETC/config.json"
+  ok "linked to the Aegis × Burrow gate (its dashboard opens the web mail)"
+}
+
 ensure_login() {
   if SELFMAIL_ETC="$ETC" "$NODE" -e 'process.exit(Object.keys(JSON.parse(require("fs").readFileSync(process.env.SELFMAIL_ETC+"/users.json","utf8"))).length?0:1)' 2>/dev/null && [ -z "$UI_PASS" ]; then
     ok "existing web login kept"; return
@@ -469,6 +479,7 @@ if [ "$MODE_RUN" = update ]; then
   deploy_app; install_service; copy_dkim_public
   [ -f /etc/systemd/system/selfmail-health.timer ] && health_timer ""
   sign_agreement 0
+  link_host
   ensure_login
   start_and_check
   ok "updated to $SM_VERSION — settings and mail untouched"
@@ -494,7 +505,7 @@ if [ "$MODE_RUN" = adopt ]; then
   chown -R vmail:vmail "$MAILROOT/$DOMAIN" 2>/dev/null || true
   deploy_app; install_service; copy_dkim_public
   [ "$INMODE" = relay ] && [ -n "$WEBHOOK_URL" ] && health_timer ""
-  sign_agreement 0; ensure_login; start_and_check; summary
+  sign_agreement 0; link_host; ensure_login; start_and_check; summary
   exit 0
 fi
 
@@ -548,6 +559,7 @@ deploy_app
 install_service
 copy_dkim_public
 [ "$TUNNEL" = yes ] && health_timer "$TUNNEL_HOST"
+link_host
 ensure_login
 systemctl enable postfix >/dev/null 2>&1 || true
 start_and_check

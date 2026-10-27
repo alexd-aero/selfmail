@@ -23,6 +23,7 @@ sudo ./setup.sh
 - Mail shows exactly as the sender designed it, in a locked-down frame: links open in a new tab, scripts never run, and pictures from the internet stay hidden until you allow them (they can reveal that you opened a message)
 - Every language and symbol displays correctly — emoji, accents, curly quotes, Japanese, Cyrillic — whatever character set the sender used. Plain-text mail with tables or text art switches to a fixed-width font so the columns line up
 - Attachments in and out (with image previews), inline images, drafts that save themselves, reply / reply all / forward
+- **Every domain you own, one inbox**: add as many domains as you like in **Domain & DNS**; each gets its own DKIM key and DNS checklist, and you can send from any of them
 - **Catch-all addresses**: anything@yourdomain arrives in your mailbox, and the sidebar groups mail by the address it was sent to — handy for giving every website its own address. You can also send *from* any of them
 - New mail appears instantly (no refreshing), with optional desktop notifications
 - Search with `from:`, `to:`, `subject:` and `has:attachment`
@@ -30,11 +31,22 @@ sudo ./setup.sh
 
 **Setup and health, in plain language**
 - **Domain & DNS** lists every record you need with copy buttons, and checks each one against public DNS
-- **Connect Cloudflare** in a few clicks: selfmail opens Cloudflare’s own token page with the right permissions already filled in (DNS edit only), you click *Create* and *Copy*, and selfmail picks the token up by itself when you come back — no pasting needed (you still can, if you prefer). Then one click adds or fixes all the records. It shows exactly what will change first, merges into an SPF record you already have instead of replacing it, keeps your own DMARC policy, and never touches unrelated records. Optionally it keeps the records updated when your home IP changes
+- **Connect Cloudflare** in a few clicks: selfmail opens Cloudflare’s own token page with the right permissions already filled in (DNS edit only), you click *Create* and *Copy*, and selfmail picks the token up by itself when you come back — or paste it into the box that appears as soon as you press Connect. It then lists **the other domains the token can manage** and asks whether to add them as mail domains (nothing is added without your tick and confirm). One click per domain adds or fixes all the records. It shows exactly what will change first, merges into an SPF record you already have instead of replacing it, keeps your own DMARC policy, and never touches unrelated records. Optionally it keeps the records updated when your home IP changes
 - **Server status**: Postfix, OpenDKIM, the incoming-mail path, public IP, reverse DNS, outgoing port 25, disk space, the outgoing queue (retry or delete), the mail log, and **blocklists** — including Spamhaus, queried the way that actually works (Spamhaus refuses public DNS resolvers, which is why most checkers show it as clean)
 - **Your server sends its own mail** (directly to Gmail, Outlook and so on). A relay service is optional — as a backup or for everything — with automatic port fallbacks (see [Sending and ports](#sending-and-ports))
 
 ![Domain & DNS](docs/domain.png)
+
+## Inside Aegis × Burrow
+
+selfmail is also an addon for [Aegis × Burrow](https://github.com/alexd-aero/aegis-burrow) (2.33+). Add it with this repository's link on the Burrow page → Addons:
+
+- **Install or link.** On a machine without selfmail, the addon installs it from its settings (domain, mailbox, incoming mode, your name for the agreement). If selfmail is already there, it's linked as it is. Installing needs root: Aegis tells you why and asks for your password only if `sudo` needs one, then hands it to `sudo` for that one job (never stored).
+- **The web mail inside the dashboard** at `/__gate/selfmail/`, behind the dashboard's own login, plus a tile on the home page.
+- **A live card on the Burrow page**: unread, mail in and out (7 days), the queue, DNS per domain, blocklists, Postfix/OpenDKIM/SMTP, port 25 and disk; problems show there and on the dashboard's bell, and clear themselves when fixed.
+- **Alerts for other addons.** selfmail announces itself on the [Weft mesh](https://github.com/alexd-aero/weft) with an alerts API, so [Bulwark](https://github.com/alexd-aero/bulwark) can email you about attack waves — only while selfmail is installed. selfmail isn't installed by default; add it when you want it.
+
+Uninstalling the addon never deletes mail or settings; a selfmail that was there before the addon simply keeps running.
 
 ## How mail gets in without port 25
 
@@ -108,7 +120,8 @@ sudo selfmail uninstall    # remove the app (asks before touching your mail)
 - **The web mail listens only on this machine and your private networks** (LAN, Tailscale…), never on a public IPv6 address. To use it away from home, put it behind a VPN or an authenticating proxy.
 - **Mail is shown in a sandboxed frame** with its own Content-Security-Policy: no scripts, no forms, no remote content until you allow it, and dangerous markup is stripped as a second layer.
 - **Sender logos** are fetched by your server (from Google’s public favicon service, by company domain only — never for gmail.com-style personal addresses) and cached, so your browser never contacts anyone else. Turn them off in **Settings → Appearance**.
-- **The app runs as `vmail`**, not root. It can run exactly one program as root — `bin/selfmail-root` — which accepts a short list of operations (read the mail log, manage the queue, set the relay, restart Postfix/OpenDKIM/the tunnel) and validates every argument.
+- **The app runs as `vmail`**, not root. It can run exactly one program as root — `bin/selfmail-root` — which accepts a short list of operations (read the mail log, manage the queue, set the relay, add or remove a domain, restart Postfix/OpenDKIM/the tunnel) and validates every argument.
+- **Under Aegis × Burrow** the gate signs its requests with a key from the addon's data folder; selfmail accepts that key only from this machine (loopback), and other apps can send *you* alerts with it (`POST /api/notify`, 30 per hour per app).
 - **The incoming webhook** is authorised by a secret in its URL. That URL appears in a public TXT record, so anyone who reads your DNS could post junk into your inbox (never read or send). If that matters, set a webhook signing key from your Forward Email account in the config (`webhookKey`) and selfmail will verify each delivery’s signature. You can also generate a new secret address in **Settings → Receiving** at any time.
 
 ## Deliverability, honestly
@@ -141,6 +154,7 @@ app/lib/             config, auth, maildir, store, mime, send, outbound (ports/f
                      status, isp, agreement, events
 app/public/          index.html, app.css, app.js
 bin/selfmail         CLI            bin/selfmail-root   the root helper
+forge-addon.json     the Aegis × Burrow addon (Weft): weft/ scripts, aegis/extension.mjs + aegis/panel.js
 setup.sh  doctor.sh  uninstall.sh
 ```
 

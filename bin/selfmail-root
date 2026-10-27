@@ -73,6 +73,39 @@ case "$op" in
     systemctl restart "$unit"
     echo "restarted $unit"
     ;;
+  domain-add)
+    # domain-add DOMAIN SELECTOR MAILBOX@MAIN — take mail for DOMAIN too (catch-all into the main
+    # mailbox) and sign mail from it with its own DKIM key. Safe to run again.
+    d="${1:-}"; s="${2:-}"; target="${3:-}"
+    host_ok "$d" || die "bad domain"; [[ "$s" =~ ^[A-Za-z0-9._-]{1,63}$ ]] || die "bad selector"
+    [[ "$target" =~ ^[A-Za-z0-9._+-]{1,64}@([A-Za-z0-9-]+\.)+[A-Za-z]{2,63}$ ]] || die "bad mailbox"
+    d="${d,,}"
+    mkdir -p "/etc/opendkim/keys/$d"
+    if [ ! -f "/etc/opendkim/keys/$d/$s.private" ]; then ( cd "/etc/opendkim/keys/$d" && opendkim-genkey -b 2048 -d "$d" -s "$s" ); fi
+    chown -R opendkim:opendkim "/etc/opendkim/keys/$d"; chmod 700 "/etc/opendkim/keys/$d"; chmod 600 "/etc/opendkim/keys/$d/$s.private"
+    kt="$s._domainkey.$d $d:$s:/etc/opendkim/keys/$d/$s.private"; st="*@$d $s._domainkey.$d"
+    grep -qxF "$kt" /etc/opendkim/key.table 2>/dev/null || echo "$kt" >> /etc/opendkim/key.table
+    grep -qxF "$st" /etc/opendkim/signing.table 2>/dev/null || echo "$st" >> /etc/opendkim/signing.table
+    doms="$(postconf -h virtual_mailbox_domains | tr ', ' '\n\n' | sed '/^$/d')"
+    printf '%s\n' "$doms" | grep -qxF "$d" || postconf -e "virtual_mailbox_domains = $(printf '%s\n%s\n' "$doms" "$d" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+    va="$(printf '@%s\t%s' "$d" "$target")"
+    grep -qxF "$va" /etc/postfix/virtual 2>/dev/null || { awk -v k="@$d" '$1 != k' /etc/postfix/virtual > /etc/postfix/virtual.new 2>/dev/null || true; echo "$va" >> /etc/postfix/virtual.new; mv /etc/postfix/virtual.new /etc/postfix/virtual; }
+    postmap /etc/postfix/virtual
+    systemctl restart opendkim; postfix reload >/dev/null 2>&1 || systemctl restart postfix
+    echo "taking mail for @$d"
+    ;;
+  domain-remove)
+    d="${1:-}"; host_ok "$d" || die "bad domain"; d="${d,,}"
+    main="$(postconf -h virtual_mailbox_domains | tr ', ' '\n\n' | sed '/^$/d' | head -1)"
+    [ "$d" = "$main" ] && die "that's the main domain"
+    awk -v d="$d" 'index($2, d":") != 1' /etc/opendkim/key.table > /etc/opendkim/key.table.new || true; mv /etc/opendkim/key.table.new /etc/opendkim/key.table
+    awk -v k="*@$d" '$1 != k' /etc/opendkim/signing.table > /etc/opendkim/signing.table.new || true; mv /etc/opendkim/signing.table.new /etc/opendkim/signing.table
+    chown opendkim:opendkim /etc/opendkim/key.table /etc/opendkim/signing.table
+    postconf -e "virtual_mailbox_domains = $(postconf -h virtual_mailbox_domains | tr ', ' '\n\n' | sed '/^$/d' | grep -vxF "$d" | paste -sd, - | sed 's/,/, /g')"
+    awk -v k="@$d" '$1 != k' /etc/postfix/virtual > /etc/postfix/virtual.new || true; mv /etc/postfix/virtual.new /etc/postfix/virtual; postmap /etc/postfix/virtual
+    systemctl restart opendkim; postfix reload >/dev/null 2>&1 || systemctl restart postfix
+    echo "no longer taking mail for @$d (its DKIM key is kept in /etc/opendkim/keys/$d)"
+    ;;
   dkim-public)
     d="${1:-}"; s="${2:-}"
     host_ok "$d" || die "bad domain"; [[ "$s" =~ ^[A-Za-z0-9._-]{1,63}$ ]] || die "bad selector"

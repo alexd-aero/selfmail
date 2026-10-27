@@ -494,3 +494,32 @@ label.check input{width:18px;height:18px;margin-top:1px;accent-color:var(--a1);f
   .sender .when { margin-left: 0; width: 100%; text-align: left; display: flex; gap: 8px; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--line); }
   .sender .when b { display: inline; }
 }
+
+/* ---- Domains ---- */
+.dom-card h2 .grow { flex: 1; }
+.dom-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.dom-tab { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--line2);
+  background: var(--hover); color: var(--text); font-weight: 600; font-size: 13.5px; transition: border-color .2s, background .2s, transform .15s; }
+.dom-tab:hover { border-color: color-mix(in srgb, var(--a1) 45%, var(--line2)); transform: translateY(-1px); }
+.dom-tab.on { background: color-mix(in srgb, var(--a1) 16%, transparent); border-color: color-mix(in srgb, var(--a1) 60%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--a1) 14%, transparent); }
+.dom-tab .nm { font-family: var(--mono); font-size: 12.5px; }
+.dom-tab .chip { height: 19px; font-size: 10.5px; padding: 0 7px; }
+.dom-tab .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.dom-tab .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.dom-tab .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.dom-tab.add { border-style: dashed; color: var(--muted); background: transparent; }
+.dom-tab.add:hover { color: var(--text); }
+.cf-mini svg { width: 22px; height: 11px; display: block; }
+.mono-dom { font-family: var(--mono); font-size: .85em; color: var(--a1); }
+.cf-token { display: none; margin-top: 12px; padding: 14px; border-radius: 14px; border: 1px dashed rgba(246,130,31,.45); background: rgba(246,130,31,.06); position: relative; }
+.cf-token.show { display: block; animation: rise .35s var(--ease); }
+.cf-token-label { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+.cf-token-label .i { color: #f6821f; width: 16px; height: 16px; }
+.cf-token input { flex: 1; min-width: 200px; font-family: var(--mono); }
+.cf-token .small { font-size: 12px; margin: 8px 0 0; }
+.zone-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow: auto; margin: 6px 0; }
+.zone-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--hover); cursor: pointer; }
+.zone-row:hover { border-color: var(--line2); }
+.zone-row.all { background: transparent; border-style: dashed; }
+.zone-row select { width: auto; min-width: 150px; }
+.zone-row .small, .form .small { font-size: 12px; }

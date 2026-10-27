@@ -29,7 +29,7 @@ async function summary(entry) {
   if (hit && hit.v === 3) return hit;
   try {
     const raw = await fs.promises.readFile(entry.file);
-    const s = await mime.summarize(raw, cfg.load().domain);
+    const s = await mime.summarize(raw, cfg.domains());
     idx[entry.base] = { v: 3, ...s }; dirty = true;
     return idx[entry.base];
   } catch (e) {

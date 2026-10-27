@@ -24,13 +24,15 @@ function snippetOf(m) {
 
 /** The address a catch-all message was actually sent to. */
 function recipientOf(m, domain) {
+  const doms = (Array.isArray(domain) ? domain : [domain]).filter(Boolean).map(d => '@' + String(d).toLowerCase());
+  const ours = a => doms.some(d => String(a).toLowerCase().replace(/[<>\s]/g, '').endsWith(d));
   const h = m.headers;
   for (const k of ['x-original-to', 'delivered-to', 'x-forwarded-to', 'envelope-to']) {
     const v = h.get(k); const s = (Array.isArray(v) ? v[0] : v);
     const a = typeof s === 'string' ? s : s?.value?.[0]?.address || s?.text;
-    if (a && String(a).toLowerCase().endsWith('@' + domain)) return String(a).toLowerCase().replace(/[<>]/g, '').trim();
+    if (a && ours(a)) return String(a).toLowerCase().replace(/[<>]/g, '').trim();
   }
-  for (const a of [...addrList(m.to), ...addrList(m.cc)]) if (a.address.endsWith('@' + domain)) return a.address;
+  for (const a of [...addrList(m.to), ...addrList(m.cc)]) if (ours(a.address)) return a.address;
   return '';
 }
 

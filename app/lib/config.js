@@ -29,7 +29,9 @@ const DEFAULTS = {
   port: 8088,
   listen: 'private',       // 'private' (loopback + LAN/VPN addresses) | 'localhost' | 'all' | "ip,ip"
   mailroot: '/var/mail/vhosts',
-  cloudflare: { token: '', zoneId: '', zoneName: '', account: '' },
+  extraDomains: [],        // more domains delivered into the same mailbox: [{ domain, at }]
+  hostKey: '',             // set when an Aegis × Burrow gate hosts selfmail (x-selfmail-key on its requests)
+  cloudflare: { token: '', zoneId: '', zoneName: '', account: '', zones: {} },   // zones: { domain: { id, name } } for the other domains
 };
 
 function merge(def, val) {
@@ -71,6 +73,10 @@ function save(next) {
 function update(fn) { const c = JSON.parse(JSON.stringify(load())); fn(c); return save(c); }
 
 const address = (c = load()) => `${c.mailbox}@${c.domain}`;
+/** Every domain this server takes mail for: the main one first. */
+const domains = (c = load()) => [c.domain, ...(c.extraDomains || []).map(d => d.domain)].filter(Boolean).map(d => d.toLowerCase());
+/** The domain an address belongs to, if it's one of ours (longest match wins: a.example.com before example.com). */
+const domainOf = (addr, c = load()) => { const a = String(addr || '').toLowerCase(); return domains(c).filter(d => a.endsWith('@' + d)).sort((x, y) => y.length - x.length)[0] || ''; };
 const webhookEndpoint = (c = load()) => c.webhookUrl && c.inboundSecret ? `${c.webhookUrl.replace(/\/+$/, '')}/inbound/${c.inboundSecret}` : '';
 
-module.exports = { ETC, VAR, FILE, DEFAULTS, load, save, update, address, webhookEndpoint };
+module.exports = { ETC, VAR, FILE, DEFAULTS, load, save, update, address, domains, domainOf, webhookEndpoint };

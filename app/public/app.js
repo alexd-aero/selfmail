@@ -69,6 +69,7 @@ const P = {
   keyboard: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h8M6 13h.01M18 13h.01"/>',
   palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a6 6 0 0 0 6-6c0-4.9-4.5-8.6-10-8.6z"/>',
   sparkle: '<path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/><path d="M19 3v4M17 5h4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z"/>',
 };
@@ -141,10 +142,10 @@ function avatar(a, cls = '') {
   const letter = ([...s.replace(/^["'(]+/, '')][0] || '?').toUpperCase();
   const box = h('div', { class: 'avatar ' + cls, style: { '--h1': h1, '--h2': h1 + 14 } }, h('span', { text: letter }));
   const dom = addr.split('@')[1];
-  if (dom && localStorage.getItem('sm-logos') !== '0' && !failedLogos.has(dom) && dom !== S.me?.domain) {
+  if (dom && localStorage.getItem('sm-logos') !== '0' && !failedLogos.has(dom) && !(S.me?.domains || [S.me?.domain]).includes(dom)) {
     const img = new Image(); img.alt = ''; img.decoding = 'async';
     img.onload = () => box.append(img); img.onerror = () => failedLogos.add(dom);
-    img.src = '/api/avatar/' + encodeURIComponent(dom);
+    img.src = 'api/avatar/' + encodeURIComponent(dom);
   }
   return box;
 }
@@ -197,7 +198,7 @@ function showLogin(msg) {
   const btn = h('button', { class: 'btn pri', type: 'submit', style: { height: '46px', fontSize: '15px' } }, 'Sign in', icon('forward'));
   const form = h('form', { onsubmit: async e => {
     e.preventDefault(); btn.disabled = true; err.textContent = '';
-    try { await api('POST', '/api/login', { user: u.value, pass: p.value }); boot(); }
+    try { await api('POST', 'api/login', { user: u.value, pass: p.value }); boot(); }
     catch (x) { err.textContent = x.message; btn.disabled = false; p.select(); }
   } },
     h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('unread')), 'selfmail'),
@@ -219,7 +220,7 @@ async function showAgreement() {
   document.title = 'Responsible use · selfmail';
   document.body.replaceChildren(h('div', { class: 'login agree-page' }, h('div', { class: 'orb a' }), h('div', { class: 'orb b' }), h('div', { class: 'agree-card glass' }, h('span', { class: 'spin' }))), h('div', { class: 'toasts' }));
   let a;
-  try { a = await (await fetch('/api/agreement', { credentials: 'same-origin' })).json(); } catch (e) { return toast('Could not load the agreement — check the connection and reload.', { bad: true }); }
+  try { a = await (await fetch('api/agreement', { credentials: 'same-origin' })).json(); } catch (e) { return toast('Could not load the agreement — check the connection and reload.', { bad: true }); }
   const name = h('input', { type: 'text', placeholder: 'Your full name', autocomplete: 'name' });
   const tick = h('input', { type: 'checkbox' });
   const err = h('div', { class: 'err' });
@@ -228,7 +229,7 @@ async function showAgreement() {
   name.addEventListener('input', valid); tick.addEventListener('change', valid);
   btn.addEventListener('click', async () => {
     btn.disabled = true; err.textContent = '';
-    try { await api('POST', '/api/agreement', { name: name.value, agree: tick.checked }); boot(); }
+    try { await api('POST', 'api/agreement', { name: name.value, agree: tick.checked }); boot(); }
     catch (e) { err.textContent = e.message; valid(); }
   });
   $('.agree-card').replaceChildren(
@@ -240,7 +241,7 @@ async function showAgreement() {
     h('label', { class: 'f' }, 'Signature', name, h('small', { text: 'Typing your name here is your signature.' })),
     h('label', { class: 'row check' }, tick, h('span', { text: `I have read this agreement. I am responsible for how this server is used, I will follow ${a.isp.name || 'my internet provider'}’s terms, and the authors of selfmail are not responsible for it.` })),
     err,
-    h('div', { class: 'row' }, btn, h('span', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Selfmail': '1' } }).catch(() => {}); showLogin(); } }, 'Sign out')));
+    h('div', { class: 'row' }, btn, h('span', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: async () => { await fetch('api/logout', { method: 'POST', headers: { 'X-Selfmail': '1' } }).catch(() => {}); showLogin(); } }, 'Sign out')));
   scrollTo(0, 0);
 }
 
@@ -291,7 +292,7 @@ function renderNav() {
       link('#/settings', 'gear', 'Settings', '', S.view === 'settings'),
       h('div', { class: 'me' }, avatar({ name: S.me.user }), h('div', { class: 'grow' }, h('b', { text: S.me.user }), S.me.address),
         ib(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', 'Switch light / dark', toggleTheme),
-        ib('logout', 'Sign out', async () => { await api('POST', '/api/logout').catch(() => {}); showLogin('You have been signed out.'); }))));
+        S.me.hosted ? null : ib('logout', 'Sign out', async () => { await api('POST', 'api/logout').catch(() => {}); showLogin('You have been signed out.'); }))));
   $('a[href="#/f/inbox"] .n', nav)?.classList.add('hot');
   $('.nav-scroll', nav).scrollTop = oldScroll;
   const list = $('.addr-list', nav); if (list) list.scrollTop = oldList;
@@ -301,7 +302,7 @@ function renderNav() {
 }
 
 async function loadFolders() {
-  try { const r = await api('GET', '/api/folders'); S.folders = r.folders; S.aliases = r.aliases; renderNav(); } catch (e) { /* signed out */ }
+  try { const r = await api('GET', 'api/folders'); S.folders = r.folders; S.aliases = r.aliases; renderNav(); } catch (e) { /* signed out */ }
 }
 
 // =============================================================== list ====
@@ -312,7 +313,7 @@ async function loadList(more = false) {
   if (!S.items.length) renderList();
   const qs = new URLSearchParams({ folder: S.alias ? 'all' : S.folder, q: S.q, alias: S.alias, offset: S.offset, limit: 60 });
   try {
-    const r = await api('GET', '/api/messages?' + qs);
+    const r = await api('GET', 'api/messages?' + qs);
     S.items = more ? [...S.items, ...r.items] : r.items; S.total = r.total;
     for (const id of [...S.sel]) if (!S.items.some(x => x.id === id)) S.sel.delete(id);
   } catch (e) { fail(e); }
@@ -397,7 +398,7 @@ function renderBulk() {
       h('span', { class: 'count', text: `${n} selected` }),
     ] : [
       h('span', { class: 'count', text: S.total ? `${S.total} ${S.total === 1 ? 'conversation' : 'conversations'}` : '' }),
-      (inTrash || inSpam) && S.total ? h('button', { class: 'btn sm ghost danger', style: { marginLeft: 'auto' }, onclick: async () => { if (await confirmBox(`Empty ${inTrash ? 'Trash' : 'Spam'}?`, `${S.total} messages will be deleted forever.`, 'Empty', true)) { await api('POST', `/api/folders/${S.folder}/empty`).catch(fail); refresh(); } } }, `Empty ${inTrash ? 'Trash' : 'Spam'}`) : '',
+      (inTrash || inSpam) && S.total ? h('button', { class: 'btn sm ghost danger', style: { marginLeft: 'auto' }, onclick: async () => { if (await confirmBox(`Empty ${inTrash ? 'Trash' : 'Spam'}?`, `${S.total} messages will be deleted forever.`, 'Empty', true)) { await api('POST', `api/folders/${S.folder}/empty`).catch(fail); refresh(); } } }, `Empty ${inTrash ? 'Trash' : 'Spam'}`) : '',
     ]));
 }
 
@@ -405,14 +406,14 @@ function moveMenu(anchor, ids) {
   menu(anchor, ['inbox', 'archive', 'spam', 'trash'].filter(f => f !== S.folder).map(f => [FOLDER_ICON[f], S.folders.find(x => x.id === f)?.name || f, () => move(ids, f)]));
 }
 async function flag(ids, add, remove) {
-  try { await api('POST', '/api/messages/flags', { ids, add, remove }); for (const m of S.items) if (ids.includes(m.id)) { if (add.includes('F')) m.starred = true; if (remove.includes('F')) m.starred = false; if (add.includes('S')) m.unread = false; if (remove.includes('S')) m.unread = true; } renderList(); loadFolders(); if (S.msg && ids.includes(S.msg.id)) { S.msg.starred = ids.includes(S.msg.id) && add.includes('F') ? true : remove.includes('F') ? false : S.msg.starred; renderReaderTools(); } }
+  try { await api('POST', 'api/messages/flags', { ids, add, remove }); for (const m of S.items) if (ids.includes(m.id)) { if (add.includes('F')) m.starred = true; if (remove.includes('F')) m.starred = false; if (add.includes('S')) m.unread = false; if (remove.includes('S')) m.unread = true; } renderList(); loadFolders(); if (S.msg && ids.includes(S.msg.id)) { S.msg.starred = ids.includes(S.msg.id) && add.includes('F') ? true : remove.includes('F') ? false : S.msg.starred; renderReaderTools(); } }
   catch (e) { fail(e); }
 }
 async function move(ids, folder) {
   try {
-    const r = await api('POST', '/api/messages/move', { ids, folder });
+    const r = await api('POST', 'api/messages/move', { ids, folder });
     const label = S.folders.find(x => x.id === folder)?.name || folder;
-    toast(`${ids.length === 1 ? 'Conversation' : ids.length + ' messages'} moved to ${label}`, { action: { label: 'Undo', fn: async () => { await api('POST', '/api/messages/move', { ids: r.ids, folder: S.folder === 'all' || S.folder === 'starred' ? 'inbox' : S.folder }).catch(fail); refresh(); } } });
+    toast(`${ids.length === 1 ? 'Conversation' : ids.length + ' messages'} moved to ${label}`, { action: { label: 'Undo', fn: async () => { await api('POST', 'api/messages/move', { ids: r.ids, folder: S.folder === 'all' || S.folder === 'starred' ? 'inbox' : S.folder }).catch(fail); refresh(); } } });
     afterRemove(ids);
   } catch (e) { fail(e); }
 }
@@ -420,8 +421,8 @@ async function del(ids) {
   const forever = S.folder === 'trash';
   if (forever && !await confirmBox('Delete forever?', `${ids.length} message${ids.length > 1 ? 's' : ''} will be gone for good.`, 'Delete', true)) return;
   try {
-    await api('POST', '/api/messages/delete', { ids });
-    toast(forever ? 'Deleted forever' : `Moved to Trash`, forever ? {} : { action: { label: 'Undo', fn: async () => { await api('POST', '/api/messages/move', { ids: ids.map(i => 'trash~' + i.split('~')[1]), folder: S.folder === 'all' || S.folder === 'starred' ? 'inbox' : S.folder }).catch(fail); refresh(); } } });
+    await api('POST', 'api/messages/delete', { ids });
+    toast(forever ? 'Deleted forever' : `Moved to Trash`, forever ? {} : { action: { label: 'Undo', fn: async () => { await api('POST', 'api/messages/move', { ids: ids.map(i => 'trash~' + i.split('~')[1]), folder: S.folder === 'all' || S.folder === 'starred' ? 'inbox' : S.folder }).catch(fail); refresh(); } } });
     afterRemove(ids);
   } catch (e) { fail(e); }
 }
@@ -444,13 +445,13 @@ const baseHash = () => S.alias ? `#/a/${encodeURIComponent(S.alias)}` : `#/f/${S
 async function openMsg(id, fromRoute) {
   if (!fromRoute) setHash(`${baseHash()}/${encodeURIComponent(id)}`);
   const row = S.items.find(x => x.id === id);
-  if (row && row.folder === 'drafts') { const d = await api('GET', `/api/messages/${encodeURIComponent(id)}?peek=1`).catch(fail); if (d) return compose({ draft: d }); }
+  if (row && row.folder === 'drafts') { const d = await api('GET', `api/messages/${encodeURIComponent(id)}?peek=1`).catch(fail); if (d) return compose({ draft: d }); }
   S.open = id; $('#shell').classList.add('reading');
   $$('.mrow').forEach(r => r.classList.toggle('on', r.dataset.id === id));
   const rd = $('#reader');
   rd.replaceChildren(h('div', { class: 'rtool' }), h('div', { class: 'placeholder' }, h('span', { class: 'spin' })));
   try {
-    const m = await api('GET', `/api/messages/${encodeURIComponent(id)}`);
+    const m = await api('GET', `api/messages/${encodeURIComponent(id)}`);
     if (S.open !== id) return;
     m.starred = (m.flags || '').includes('F');
     S.msg = m;
@@ -488,8 +489,8 @@ function renderReaderTools() {
     ib('more', 'More', e => menu(e.currentTarget, [
       ['replyall', 'Reply all', () => compose({ mode: 'replyall', msg: m })],
       ['forward', 'Forward', () => compose({ mode: 'forward', msg: m })],
-      ['download', 'Download (.eml)', () => { location.href = `/api/messages/${encodeURIComponent(m.id)}/raw`; }],
-      ['file', 'Show original', () => window.open(`/api/messages/${encodeURIComponent(m.id)}/raw`, '_blank')],
+      ['download', 'Download (.eml)', () => { location.href = `api/messages/${encodeURIComponent(m.id)}/raw`; }],
+      ['file', 'Show original', () => window.open(`api/messages/${encodeURIComponent(m.id)}/raw`, '_blank')],
     ])));
   const star = $$('.ib', t).find(b => b.title.startsWith('Star') || b.title.startsWith('Unstar'));
   if (star) $('svg', star).style.fill = m.starred ? 'currentColor' : 'none';
@@ -506,7 +507,7 @@ function renderReader() {
   const images = S.images.has(m.id);
   const mono = S.mono[m.id];
   const q = new URLSearchParams(); if (images) q.set('images', '1'); if (mono !== undefined) q.set('mono', mono ? '1' : '0');
-  const frame = h('iframe', { title: 'Message', sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', src: `/api/messages/${encodeURIComponent(m.id)}/frame?${q}`, referrerpolicy: 'no-referrer' });
+  const frame = h('iframe', { title: 'Message', sandbox: 'allow-same-origin allow-popups allow-popups-to-escape-sandbox', src: `api/messages/${encodeURIComponent(m.id)}/frame?${q}`, referrerpolicy: 'no-referrer' });
   const notice = h('div', { class: 'notice hide' }, icon('image'), h('span', { class: 'grow', text: 'Pictures from the internet are hidden to protect your privacy — they can tell the sender you opened this.' }),
     h('button', { class: 'btn sm', onclick: () => { S.images.add(m.id); renderReader(); } }, 'Show pictures'));
   frame.addEventListener('load', () => wireFrame(frame, notice));
@@ -532,8 +533,8 @@ function renderReader() {
       notice,
       !m.hasHtml ? h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '8px' } }, h('button', { class: 'btn sm ghost', title: 'Show this message in a fixed-width font (for tables and text art)', onclick: () => { S.mono[m.id] = !(mono ?? frame.dataset.mono === '1'); renderReader(); } }, icon('mono'), 'Fixed-width')) : null,
       h('div', { class: 'frame-wrap' }, frame),
-      m.attachments.length ? h('div', { class: 'atts' }, m.attachments.map(x => h('a', { class: 'att', href: `/api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}`, download: x.name },
-        h('div', { class: 'ic' }, isImg(x.type) ? h('img', { src: `/api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}?view=1`, alt: '', loading: 'lazy' }) : icon('file')),
+      m.attachments.length ? h('div', { class: 'atts' }, m.attachments.map(x => h('a', { class: 'att', href: `api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}`, download: x.name },
+        h('div', { class: 'ic' }, isImg(x.type) ? h('img', { src: `api/messages/${encodeURIComponent(m.id)}/attachments/${x.i}?view=1`, alt: '', loading: 'lazy' }) : icon('file')),
         h('div', { style: { minWidth: 0 } }, h('b', { text: x.name }), h('small', { text: `${fmtSize(x.size)} · ${(x.type.split('/')[1] || 'file').toUpperCase()}` }))))) : null,
       m.unsubscribe ? h('p', { class: 'muted', style: { fontSize: '12.5px' } }, 'Mailing list · ', h('a', { href: m.unsubscribe, target: '_blank', rel: 'noopener noreferrer' }, 'Unsubscribe')) : null,
       m.folder !== 'sent' ? quickReply(m) : h('div', { class: 'row', style: { marginTop: '18px' } }, h('button', { class: 'btn', onclick: () => compose({ mode: 'forward', msg: m }) }, icon('forward'), 'Forward')))));
@@ -583,7 +584,7 @@ function wireFrame(frame, notice) {
 
 // ============================================================ compose ====
 let openComposer = null, contactsCache = null;
-async function contacts() { if (!contactsCache) contactsCache = await api('GET', '/api/contacts').catch(() => []); return contactsCache; }
+async function contacts() { if (!contactsCache) contactsCache = await api('GET', 'api/contacts').catch(() => []); return contactsCache; }
 function quoteHtml(m) {
   const who = m.from.name ? `${esc(m.from.name)} &lt;${esc(m.from.address)}&gt;` : esc(m.from.address);
   return `<p><br></p><p>On ${esc(fmtFull(m.date))}, ${who} wrote:</p><blockquote>${esc(m.text || '').replace(/\n/g, '<br>')}</blockquote>`;
@@ -592,7 +593,7 @@ function fwdHtml(m) {
   return `<p><br></p><p>---------- Forwarded message ----------<br>From: ${esc(nameOf(m.from))} &lt;${esc(m.from.address)}&gt;<br>Date: ${esc(fmtFull(m.date))}<br>Subject: ${esc(m.subject)}<br>To: ${esc(m.to.map(a => a.address).join(', '))}</p><p>${esc(m.text || '').replace(/\n/g, '<br>')}</p>`;
 }
 const sigHtml = () => S.me.signature ? `<p><br></p><div class="sig">-- <br>${esc(S.me.signature).replace(/\n/g, '<br>')}</div>` : '';
-const mine = a => String(a || '').toLowerCase().endsWith('@' + S.me.domain);
+const mine = a => (S.me.domains || [S.me.domain]).some(d => String(a || '').toLowerCase().endsWith('@' + d));
 /** From / To / Cc / Subject and threading headers for a reply or forward. */
 function replyBasics(m, mode) {
   const sub = m.subject || '';
@@ -610,7 +611,7 @@ function queueSend(p, onUndo) {
   toast('Sending…', { icon: 'send', ms: 5000, bar: true, action: { label: 'Undo', fn: () => { cancelled = true; onUndo && onUndo(); toast('Not sent — back to editing', { icon: 'back' }); } } });
   setTimeout(async () => {
     if (cancelled) return;
-    try { await api('POST', '/api/send', p); toast('Message sent', { icon: 'send' }); contactsCache = null; refresh(); }
+    try { await api('POST', 'api/send', p); toast('Message sent', { icon: 'send' }); contactsCache = null; refresh(); }
     catch (e) {
       const v = await dialog('Not sent', h('div', {}, h('p', { style: { margin: '0 0 8px' }, text: e.message }), e.data?.diagnosis ? h('p', { class: 'muted', style: { margin: 0 }, text: e.data.diagnosis }) : null), [['Close', null, 'ghost'], ['Edit message', 'edit', 'pri']]);
       if (v === 'edit') compose({ restore: p });
@@ -682,16 +683,17 @@ function compose(o = {}) {
   }
   if (o.restore) { const r = o.restore; base = { ...base, ...r }; body = r.html || ''; atts = (r.attachments || []).map(x => ({ ...x, size: Math.round((x.data || '').length * 0.75) })); draftId = r.draft || null; }
 
-  const froms = [...new Set([base.from, me, ...S.aliases.map(a => a.address)])].filter(mine);
+  const froms = [...new Set([base.from, me, ...(S.me.domains || []).map(d => `${S.me.mailbox}@${d}`), ...S.aliases.map(a => a.address)])].filter(mine);
   const fromSel = h('select', {}, froms.map(a => h('option', { value: a, text: a })), h('option', { value: '__other', text: 'Another address…' }));
   fromSel.value = base.from;
   fromSel.addEventListener('change', async () => {
     if (fromSel.value !== '__other') return;
     const inp = h('input', { type: 'text', placeholder: `anything@${dom}` });
-    const v = await dialog('Send from another address', h('label', { class: 'f' }, `Every address @${dom} is yours (catch-all).`, inp), [['Cancel', null, 'ghost'], ['Use it', 'ok', 'pri']]);
+    const doms = (S.me.domains || [dom]).map(d => '@' + d).join(', ');
+    const v = await dialog('Send from another address', h('label', { class: 'f' }, `Every address at ${doms} is yours (catch-all).`, inp), [['Cancel', null, 'ghost'], ['Use it', 'ok', 'pri']]);
     const a = (v && inp.value.trim().toLowerCase()) || '';
     if (a && mine(a) && /^[^\s@]+@/.test(a)) { fromSel.insertBefore(h('option', { value: a, text: a }), fromSel.lastChild); fromSel.value = a; }
-    else { fromSel.value = me; if (v) toast(`It has to end with @${dom}`, { bad: true }); }
+    else { fromSel.value = me; if (v) toast(`It has to end with ${doms}`, { bad: true }); }
   });
   const to = tokenField(base.to, 'Who is it for?'), cc = tokenField(base.cc, 'Cc'), bcc = tokenField(base.bcc, 'Bcc');
   const ccRow = h('div', { class: 'cfield' + (base.cc ? '' : ' hide') }, h('label', { text: 'Cc' }), cc.el);
@@ -721,7 +723,7 @@ function compose(o = {}) {
     ed, attBox,
     h('div', { class: 'cfoot' }, h('button', { class: 'btn pri send-btn', onclick: () => doSend() }, 'Send', icon('send')), status,
       h('span', { class: 'muted', style: { fontSize: '12px' } }, kbd(MAC ? '⌘' : 'Ctrl'), ' ', kbd('Enter')),
-      ib('trash', 'Discard', async () => { if (await confirmBox('Discard this message?', 'The draft will be deleted.', 'Discard', true)) { if (draftId) await api('POST', '/api/messages/delete', { ids: [draftId] }).catch(() => {}); close(); refresh(); } }), file),
+      ib('trash', 'Discard', async () => { if (await confirmBox('Discard this message?', 'The draft will be deleted.', 'Discard', true)) { if (draftId) await api('POST', 'api/messages/delete', { ids: [draftId] }).catch(() => {}); close(); refresh(); } }), file),
     h('div', { class: 'dropzone' }, 'Drop files to attach'));
   const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov && innerWidth > 760) closeSave(); } }, box);
   document.body.append(ov);
@@ -767,7 +769,7 @@ function compose(o = {}) {
   async function saveDraft() {
     if (!dirty || sending || !hasContent()) return;
     dirty = false;
-    try { const r = await api('POST', '/api/drafts', payload()); draftId = r.id; status.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    try { const r = await api('POST', 'api/drafts', payload()); draftId = r.id; status.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch (e) { dirty = true; }
   }
   const timer = setInterval(saveDraft, 8000);
@@ -819,32 +821,94 @@ const statusChip = s => h('span', { class: 'chip ' + ({ ok: 'ok', missing: 'bad'
 
 // ---- Domain & DNS ----
 async function pageDomain() {
-  const [st, recs] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/dns')]);
-  const table = h('tbody');
-  const fill = (rows, checked) => table.replaceChildren(...rows.map(r => h('tr', {},
-    h('td', {}, h('b', { text: r.type }), r.priority ? h('div', { class: 'muted', text: `priority ${r.priority}` }) : null),
-    h('td', { class: 'v' }, r.name, ' ', h('button', { class: 'copy', title: 'Copy name', onclick: () => copyText(r.name) }, icon('copy'))),
-    h('td', { class: 'v' }, r.content, ' ', h('button', { class: 'copy', title: 'Copy value', onclick: () => copyText(r.content) }, icon('copy')), h('div', { class: 'note', text: r.note }),
-      checked && r.status !== 'ok' && r.found ? h('div', { class: 'found', text: `Found: ${r.found}` }) : null, checked && r.detail ? h('div', { class: 'found', text: r.detail }) : null),
-    h('td', {}, checked ? statusChip(r.status) : h('span', { class: 'chip', text: '…' })))));
-  fill(recs, false);
-  const summary = h('span', { class: 'chip', text: 'Checking…' });
+  const [st, dl] = await Promise.all([api('GET', 'api/settings'), api('GET', 'api/domains')]);
+  let domains = dl.domains;
+  if (!domains.some(d => d.domain === S.domSel)) S.domSel = domains[0].domain;
+  const dom = () => domains.find(d => d.domain === S.domSel) || domains[0];
+  const health = {};   // domain -> {ok, total}
+
+  // ---- the domains strip ----
+  const strip = h('div', { class: 'dom-strip' });
+  const paintStrip = () => strip.replaceChildren(...domains.map(d => {
+    const hl = health[d.domain];
+    return h('button', { class: 'dom-tab' + (d.domain === S.domSel ? ' on' : ''), onclick: () => { S.domSel = d.domain; pageDomain(); } },
+      h('span', { class: 'dot ' + (!hl ? '' : hl.ok === hl.total ? 'ok' : 'warn') }),
+      h('span', { class: 'nm', text: d.domain }),
+      d.main ? h('span', { class: 'chip', text: 'Main' }) : null,
+      d.cloudflare ? h('span', { class: 'cf-mini', title: 'Managed through Cloudflare', html: CF_SVG }) : null);
+  }), h('button', { class: 'dom-tab add', onclick: () => addDomains() }, icon('plus'), 'Add domain'));
+  paintStrip();
+  for (const d of domains) api('GET', 'api/dns/check?domain=' + encodeURIComponent(d.domain)).then(r => { health[d.domain] = r; paintStrip(); if (d.domain === S.domSel) showRecords(r.records, true, r); }).catch(() => {});
+
+  async function addDomains(prefill = []) {
+    const inp = h('input', { type: 'text', placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false' });
+    const v = await dialog('Add a domain', h('div', { class: 'form' },
+      h('p', { class: 'sub', text: 'Mail to any address at this domain lands in your inbox, and you can send from it. selfmail makes its own DKIM key; then you add the DNS records (or Cloudflare does it for you).' }),
+      h('label', { class: 'f' }, 'Domain', inp), h('p', { class: 'muted small', text: 'Use the exact part after the @, e.g. example.com or mail.example.com.' })),
+      [['Cancel', null, 'ghost'], ['Add domain', 'ok', 'pri']], () => inp.focus());
+    if (v !== 'ok' || !inp.value.trim()) return;
+    await addList([inp.value.trim()]);
+  }
+  async function addList(list) {
+    const t = toast(list.length > 1 ? `Adding ${list.length} domains…` : `Adding ${list[0]}…`, { icon: 'globe', ms: 60000 });
+    let last = null;
+    for (const d of list) {
+      try { const r = await api('POST', 'api/domains', { domain: d }); domains = r.domains; last = d; }
+      catch (e) { fail(e); }
+    }
+    t.close();
+    if (last) { toast(list.length > 1 ? 'Domains added — now set up their DNS' : `${last} added — now set up its DNS`, { icon: 'check' }); S.domSel = last; S.me.domains = domains.map(d => d.domain); pageDomain(); }
+  }
+
+  // ---- records of the selected domain ----
+  const table = h('tbody'), summary = h('span', { class: 'chip', text: 'Checking…' });
+  function showRecords(rows, checked, r) {
+    table.replaceChildren(...rows.map(x => h('tr', {},
+      h('td', {}, h('b', { text: x.type }), x.priority ? h('div', { class: 'muted', text: `priority ${x.priority}` }) : null),
+      h('td', { class: 'v' }, x.name, ' ', h('button', { class: 'copy', title: 'Copy name', onclick: () => copyText(x.name) }, icon('copy'))),
+      h('td', { class: 'v' }, x.content, ' ', h('button', { class: 'copy', title: 'Copy value', onclick: () => copyText(x.content) }, icon('copy')), h('div', { class: 'note', text: x.note }),
+        checked && x.status !== 'ok' && x.found ? h('div', { class: 'found', text: `Found: ${x.found}` }) : null, checked && x.detail ? h('div', { class: 'found', text: x.detail }) : null),
+      h('td', {}, checked ? statusChip(x.status) : h('span', { class: 'chip', text: '…' })))));
+    if (r) { summary.className = 'chip ' + (r.ok === r.total ? 'ok' : 'warn'); summary.textContent = `${r.ok} of ${r.total} correct`; }
+  }
   const check = async () => {
     summary.className = 'chip'; summary.textContent = 'Checking…';
-    try { const r = await api('GET', '/api/dns/check'); fill(r.records, true); summary.className = 'chip ' + (r.ok === r.total ? 'ok' : 'warn'); summary.textContent = `${r.ok} of ${r.total} correct`; }
+    try { const r = await api('GET', 'api/dns/check?domain=' + encodeURIComponent(S.domSel)); health[S.domSel] = r; paintStrip(); showRecords(r.records, true, r); }
     catch (e) { summary.textContent = 'Check failed'; fail(e); }
   };
-  check();
+  api('GET', 'api/dns?domain=' + encodeURIComponent(S.domSel)).then(r => { if (!health[S.domSel]) showRecords(r, false); }).catch(fail);
 
+  // ---- Cloudflare ----
   const cf = h('div', { class: 'card' });
-  // Cloudflare's template link opens its own "Create API token" form with the
-  // permissions already ticked; the person only clicks Continue → Create → Copy.
-  // selfmail then picks the token up by itself: from the clipboard when the tab
-  // gets focus back, or from a paste anywhere on the page.
-  const zoneGuess = st.domain.split('.').slice(-2).join('.');
+  const zoneGuess = S.domSel.split('.').slice(-2).join('.');
   const tokenUrl = 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=' + encodeURIComponent(JSON.stringify([{ key: 'dns', type: 'edit' }, { key: 'zone', type: 'read' }])) +
     '&accountId=*&zoneId=all&name=' + encodeURIComponent('selfmail · ' + zoneGuess);
   const looksLikeToken = t => /^[A-Za-z0-9_\-]{35,90}$/.test(t);
+
+  // After connecting (or on request): zones the token can manage that aren't mail domains yet.
+  // Nothing is added without a tick and a confirm.
+  async function offerZones(suggest) {
+    if (!suggest?.length) return;
+    const shape = S.domSel.split('.').length > 2 ? 'sub' : 'apex';
+    const rows = suggest.map(z => {
+      const box = h('input', { type: 'checkbox' });
+      const sel = h('select', {}, h('option', { value: z.zone, text: z.zone }), h('option', { value: 'mail.' + z.zone, text: 'mail.' + z.zone }));
+      sel.value = shape === 'sub' ? 'mail.' + z.zone : z.zone;
+      return { z, box, sel, el: h('label', { class: 'zone-row' }, box, h('div', { class: 'grow' }, h('b', { text: z.zone }), z.account ? h('span', { class: 'muted', text: ' · ' + z.account }) : null), h('span', { class: 'muted small', text: 'addresses @' }), sel) };
+    });
+    const all = h('input', { type: 'checkbox', onchange: e => rows.forEach(r => { r.box.checked = e.target.checked; }) });
+    const v = await dialog(suggest.length === 1 ? 'Your token can manage another domain' : `Your token can manage ${suggest.length} more domains`, h('div', { class: 'form' },
+      h('p', { class: 'sub', text: 'Want mail for any of these too? Pick them and choose the address shape. Nothing changes until you confirm, and DNS records are only touched when you press Apply.' }),
+      suggest.length > 1 ? h('label', { class: 'zone-row all' }, all, h('b', { text: 'Select all' })) : null,
+      h('div', { class: 'zone-list' }, rows.map(r => r.el)),
+      h('p', { class: 'muted small', text: 'Using the bare domain (@example.com) moves that domain’s mail here — skip it if the domain already gets mail somewhere else (Google Workspace, Outlook…). mail.example.com is the safe choice then.' })),
+      [['Not now', null, 'ghost'], ['Add selected', 'ok', 'pri']]);
+    const pick = rows.filter(r => r.box.checked).map(r => r.sel.value);
+    if (v !== 'ok' || !pick.length) return;
+    if (!await confirmBox(pick.length > 1 ? `Add ${pick.length} domains?` : `Add ${pick[0]}?`, `selfmail will take mail for ${pick.map(d => '@' + d).join(', ')} and make a DKIM key for each. You’ll review the DNS changes before anything is written to Cloudflare.`, 'Add')) return;
+    await addList(pick);
+  }
+
   function renderCf(s) {
     if (!s.cloudflare.connected) {
       let waiting = false, busy = false, tried = '', popup = null;
@@ -853,59 +917,71 @@ async function pageDomain() {
       const steps = h('ol', { class: 'cf-steps' },
         h('li', {}, h('b', { text: 'Sign in to Cloudflare' }), h('span', { text: 'A Cloudflare window opens with the right permissions already chosen.' })),
         h('li', {}, h('b', {}, 'Click ', h('i', { text: 'Continue to summary' }), ', then ', h('i', { text: 'Create Token' })), h('span', { text: 'It can only edit DNS — nothing else in your account.' })),
-        h('li', {}, h('b', {}, 'Click ', h('i', { text: 'Copy' }), ' and come back'), h('span', { text: 'selfmail picks the token up by itself and connects.' })));
+        h('li', {}, h('b', {}, 'Click ', h('i', { text: 'Copy' }), ' and come back'), h('span', { text: 'selfmail picks the token up by itself — or paste it in the box below.' })));
       const connect = async (token) => {
         token = String(token || '').trim();
         if (busy || !token) return;
-        busy = true; tried = token; setState('busy', 'Connecting to Cloudflare…');
+        busy = true; tried = token; setState('busy', 'Connecting to Cloudflare…'); go.disabled = true;
         try {
-          const r = await api('POST', '/api/cloudflare/connect', { token });
+          const r = await api('POST', 'api/cloudflare/connect', { token });
           try { popup && !popup.closed && popup.close(); } catch { }
           cleanup();
-          toast(`Connected to ${r.zone.name}`, { icon: 'check' });
-          s.cloudflare = { connected: true, zone: r.zone.name, account: r.zone.account, fresh: true }; renderCf(s);
-        } catch (e) { busy = false; setState('bad', e.message); }
+          toast(r.covers.length ? `Connected — Cloudflare manages ${r.covers.join(', ')}` : 'Connected to Cloudflare', { icon: 'check' });
+          domains = domains.map(d => ({ ...d, cloudflare: r.covers.includes(d.domain) })); paintStrip();
+          s.cloudflare = { connected: true, zone: r.zone?.name || '', account: r.zone?.account || '', fresh: true }; renderCf(s);
+          offerZones(r.suggest);
+        } catch (e) { busy = false; go.disabled = false; setState('bad', e.message); tokIn.focus(); }
       };
       const sniff = async () => {
         if (!waiting || busy || !navigator.clipboard?.readText || !window.isSecureContext) return;
-        try { const t = (await navigator.clipboard.readText()).trim(); if (looksLikeToken(t) && t !== tried) connect(t); } catch { }
+        try { const t = (await navigator.clipboard.readText()).trim(); if (looksLikeToken(t) && t !== tried) { tokIn.value = t; connect(t); } } catch { }
       };
       const onPaste = e => {
         if (!document.body.contains(cf)) return cleanup();
+        if (e.target === tokIn) return;   // the box handles its own paste
         const t = (e.clipboardData?.getData('text') || '').trim();
-        if (looksLikeToken(t) && !e.target.closest?.('.compose')) { e.preventDefault(); manual.value = t; connect(t); }
+        if (looksLikeToken(t) && !e.target.closest?.('.compose')) { e.preventDefault(); tokIn.value = t; connect(t); }
       };
       const onFocus = () => { if (!document.body.contains(cf)) return cleanup(); setTimeout(sniff, 150); };
       const cleanup = () => { window.removeEventListener('focus', onFocus); document.removeEventListener('paste', onPaste); };
       window.addEventListener('focus', onFocus); document.addEventListener('paste', onPaste);
 
+      // The token box: shown the moment Connect is pressed (and always available under "Already have a token?").
+      const tokIn = h('input', { type: 'password', placeholder: 'Paste your Cloudflare API token here', autocomplete: 'off', spellcheck: 'false',
+        onkeydown: e => { if (e.key === 'Enter') connect(tokIn.value); },
+        onpaste: () => setTimeout(() => { const t = tokIn.value.trim(); if (looksLikeToken(t)) connect(t); }, 0) });
+      const go = h('button', { class: 'btn pri', onclick: () => connect(tokIn.value) }, 'Connect');
+      const pasteBtn = window.isSecureContext && navigator.clipboard?.readText ? h('button', { class: 'btn', title: 'Paste from clipboard', onclick: async () => { try { const t = (await navigator.clipboard.readText()).trim(); if (!t) return toast('The clipboard is empty', { bad: true }); tokIn.value = t; connect(t); } catch { toast('The browser didn’t allow reading the clipboard — paste into the box instead', { bad: true }); tokIn.focus(); } } }, icon('copy')) : null;
+      const tokRow = h('div', { class: 'cf-token' }, h('div', { class: 'cf-token-label' }, icon('shield'), h('span', { text: 'Token not picked up? Paste it here' })),
+        h('div', { class: 'row' }, tokIn, pasteBtn, go),
+        h('p', { class: 'muted small' }, 'It needs ', h('b', { text: 'Zone · DNS · Edit' }), ' and ', h('b', { text: 'Zone · Zone · Read' }), '. ', h('a', { href: tokenUrl, target: '_blank', rel: 'noopener' }, 'Open the pre-filled form again')));
+      const manual = h('details', { class: 'cf-manual' }, h('summary', { text: 'Already have a token? Paste it yourself' }));
       const start = () => {
         const w = 1060, ht = 860, x = Math.max(0, (screen.availWidth - w) / 2), y = Math.max(0, (screen.availHeight - ht) / 2);
         popup = window.open(tokenUrl, 'selfmail-cloudflare', `popup,width=${w},height=${ht},left=${x},top=${y}`);
-        if (!popup) location.assign(tokenUrl);
+        if (!popup) window.open(tokenUrl, '_blank', 'noopener');
         waiting = true; cf.classList.add('waiting');
-        setState('wait', window.isSecureContext && navigator.clipboard?.readText ? 'Waiting for your token — copy it in Cloudflare and come back here' : 'Waiting for your token — copy it in Cloudflare, come back and press ' + (MAC ? '⌘' : 'Ctrl') + '+V');
+        setState('wait', window.isSecureContext && navigator.clipboard?.readText ? 'Waiting for your token — copy it in Cloudflare and come back, or paste it below' : 'Waiting for your token — paste it in the box below');
+        manual.replaceWith(tokRow); tokRow.classList.add('show');
+        setTimeout(() => tokIn.focus({ preventScroll: true }), 50);
       };
-      const manual = h('input', { type: 'password', placeholder: 'Paste a Cloudflare API token', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter') connect(manual.value); } });
-      const pasteBtn = window.isSecureContext && navigator.clipboard?.readText ? h('button', { class: 'btn', onclick: async () => { try { const t = (await navigator.clipboard.readText()).trim(); if (!t) return toast('The clipboard is empty', { bad: true }); manual.value = t; connect(t); } catch { toast('The browser didn’t allow reading the clipboard — paste it into the box instead', { bad: true }); manual.focus(); } } }, icon('copy'), 'Paste from clipboard') : null;
+      manual.addEventListener('toggle', () => { if (manual.open) { manual.replaceWith(tokRow); tokRow.classList.add('show'); tokIn.focus(); } });
       cf.className = 'card cf-card';
       cf.replaceChildren(
         h('div', { class: 'cf-hero' },
-          h('div', { class: 'cf-logo', html: '<svg viewBox="0 0 64 32"><path fill="#fff" d="M43.6 22.4l.5-1.7c.6-2 .4-3.8-.6-5.1-.9-1.2-2.3-1.9-4.1-2l-17.4-.2c-.1 0-.2-.1-.3-.1-.1-.1-.1-.2 0-.3.1-.2.2-.3.4-.3l17.6-.2c2.1-.1 4.3-1.8 5.1-3.8l1-2.6c0-.1.1-.2 0-.3C44.6 2.5 40.4 0 35.6 0c-5.5 0-10.2 3.6-11.9 8.5-1.1-.8-2.5-1.3-4-1.1-2.6.3-4.7 2.4-5 5-.1.7 0 1.3.1 2C10.5 14.5 7 18.1 7 22.5c0 .4 0 .8.1 1.2 0 .2.2.3.3.3h35.5c.2 0 .4-.1.4-.3z"/><path fill="#fff" opacity=".75" d="M50.1 10.2h-.5c-.1 0-.2.1-.3.2l-.8 2.6c-.6 2-.4 3.8.6 5.1.9 1.2 2.3 1.9 4.1 2l3.7.2c.1 0 .2.1.3.1.1.1.1.2 0 .3-.1.2-.2.3-.4.3l-3.8.2c-2.1.1-4.3 1.8-5.1 3.8l-.3.7c-.1.1 0 .3.2.3h13c.2 0 .3-.1.3-.2.2-.8.3-1.7.3-2.6 0-5.1-4.2-9.3-9.3-9.3"/></svg>' }),
+          h('div', { class: 'cf-logo', html: '<svg viewBox="0 0 64 32">' + CF_PATHS + '</svg>' }),
           h('div', { class: 'grow' },
             h('h2', { text: 'Set up DNS automatically with Cloudflare' }),
-            h('p', { class: 'sub', text: `If ${zoneGuess} uses Cloudflare, selfmail adds and fixes every record below for you. You’ll see exactly what changes before anything happens.` })),
+            h('p', { class: 'sub', text: `If your domains use Cloudflare, selfmail adds and fixes every record for you — for ${zoneGuess} and any other domain the token can manage. You see exactly what changes first.` })),
           h('button', { class: 'btn cf-go', onclick: start }, 'Connect Cloudflare', icon('arrow'))),
-        steps, stateEl,
-        h('details', { class: 'cf-manual' }, h('summary', { text: 'Already have a token? Paste it yourself' }),
-          h('div', { class: 'row' }, manual, pasteBtn, h('button', { class: 'btn pri', onclick: () => connect(manual.value) }, 'Connect')),
-          h('p', { class: 'muted small' }, 'It needs ', h('b', { text: 'Zone · DNS · Edit' }), ' and ', h('b', { text: 'Zone · Zone · Read' }), ' for ', h('b', { text: zoneGuess }), '. ', h('a', { href: tokenUrl, target: '_blank', rel: 'noopener' }, 'Open the pre-filled form'))));
+        steps, stateEl, manual);
       return;
     }
+    const d = dom();
     const planBox = h('div', { class: 'ops' });
     const applyBtn = h('button', { class: 'btn pri hide', onclick: async () => {
       applyBtn.disabled = true;
-      try { const r = await api('POST', '/api/cloudflare/apply'); toast(r.ok ? 'DNS records updated' : 'Some changes failed — see below', { bad: !r.ok }); showOps(r.results, true); setTimeout(check, 2500); }
+      try { const r = await api('POST', 'api/cloudflare/apply', { domain: d.domain }); toast(r.ok ? `DNS records for ${d.domain} updated` : 'Some changes failed — see below', { bad: !r.ok }); showOps(r.results, true); setTimeout(check, 2500); }
       catch (e) { fail(e); } applyBtn.disabled = false;
     } }, 'Apply these changes');
     const showOps = (ops, done) => {
@@ -918,33 +994,44 @@ async function pageDomain() {
         h('b', { class: 'typ', text: o.type }),
         h('div', { class: 'what' }, h('div', { text: o.name }), o.content ? h('div', { text: (o.priority ? o.priority + ' ' : '') + o.content }) : null, o.before ? h('div', { class: 'before', text: o.before }) : null, o.why ? h('div', { class: 'why', text: o.why }) : null, o.error ? h('div', { class: 'found', text: o.error }) : null))));
     };
-    const preview = async () => { planBox.replaceChildren(h('span', { class: 'spin' })); try { showOps((await api('GET', '/api/cloudflare/plan')).ops, false); } catch (e) { planBox.replaceChildren(); fail(e); } };
-    const auto = h('input', { type: 'checkbox', checked: s.autoIp, onchange: async e => { try { await api('POST', '/api/settings', { autoIp: e.target.checked }); toast(e.target.checked ? 'DNS will follow your IP' : 'Automatic IP updates off'); } catch (x) { fail(x); e.target.checked = !e.target.checked; } } });
+    const preview = async () => { planBox.replaceChildren(h('span', { class: 'spin' })); try { showOps((await api('GET', 'api/cloudflare/plan?domain=' + encodeURIComponent(d.domain))).ops, false); } catch (e) { planBox.replaceChildren(h('div', { class: 'op muted', text: e.message })); } };
+    const more = h('button', { class: 'btn ghost', onclick: async () => { more.disabled = true; try { const r = await api('GET', 'api/cloudflare/zones'); domains = domains.map(x => ({ ...x, cloudflare: r.covers.includes(x.domain) })); paintStrip(); if (r.suggest.length) offerZones(r.suggest); else toast('The token can’t manage any other domains'); if (r.covers.includes(d.domain) !== d.cloudflare) renderCf(s); } catch (e) { fail(e); } more.disabled = false; } }, icon('globe'), 'Other domains');
+    const auto = h('input', { type: 'checkbox', checked: s.autoIp, onchange: async e => { try { await api('POST', 'api/settings', { autoIp: e.target.checked }); toast(e.target.checked ? 'DNS will follow your IP' : 'Automatic IP updates off'); } catch (x) { fail(x); e.target.checked = !e.target.checked; } } });
     cf.className = 'card';
     const fresh = s.cloudflare.fresh; s.cloudflare.fresh = false;
-    cf.replaceChildren(h('h2', {}, icon('cloud'), 'Cloudflare', h('span', { class: 'chip ok', text: `Connected · ${s.cloudflare.zone}` })),
-      fresh ? h('div', { class: 'cf-done' }, icon('check'), h('div', {}, h('b', { text: 'Cloudflare is linked.' }), h('span', { text: ' Here’s everything selfmail will set up — one click and you’re done.' }))) : null,
-      h('p', { class: 'sub', text: 'Preview what needs to change, then apply. Only mail records are touched; nothing else in your zone is changed.' }),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: preview }, icon('search'), 'Preview changes'), applyBtn, h('span', { class: 'grow' }),
-        h('button', { class: 'btn ghost danger', onclick: async () => { if (await confirmBox('Disconnect Cloudflare?', 'selfmail will forget the token. Your DNS records stay as they are.', 'Disconnect', true)) { await api('POST', '/api/cloudflare/disconnect').catch(fail); s.cloudflare.connected = false; renderCf(s); } } }, 'Disconnect')),
-      planBox,
-      h('label', { class: 'row', style: { marginTop: '6px', fontWeight: 600 } }, auto, 'Keep DNS updated when my home IP changes', h('span', { class: 'muted', style: { fontWeight: 400 }, text: '(checks every 10 minutes)' })));
-    preview();
+    cf.replaceChildren(h('h2', {}, icon('cloud'), 'Cloudflare', h('span', { class: 'chip ' + (d.cloudflare ? 'ok' : 'warn'), text: d.cloudflare ? `Manages ${d.domain}` : `Can’t manage ${d.domain}` })),
+      fresh && d.cloudflare ? h('div', { class: 'cf-done' }, icon('check'), h('div', {}, h('b', { text: 'Cloudflare is linked.' }), h('span', { text: ' Here’s everything selfmail will set up — one click and you’re done.' }))) : null,
+      d.cloudflare ? h('p', { class: 'sub', text: 'Preview what needs to change, then apply. Only mail records are touched; nothing else in the zone is changed.' })
+        : h('p', { class: 'sub', text: `The token doesn’t include the zone of ${d.domain}. Make a token that covers it (or all zones), or add the records below by hand.` }),
+      h('div', { class: 'row' }, d.cloudflare ? h('button', { class: 'btn', onclick: preview }, icon('search'), 'Preview changes') : null, applyBtn, more, h('span', { class: 'grow' }),
+        h('button', { class: 'btn ghost danger', onclick: async () => { if (await confirmBox('Disconnect Cloudflare?', 'selfmail will forget the token. Your DNS records stay as they are.', 'Disconnect', true)) { await api('POST', 'api/cloudflare/disconnect').catch(fail); s.cloudflare.connected = false; domains = domains.map(x => ({ ...x, cloudflare: false })); paintStrip(); renderCf(s); } } }, 'Disconnect')),
+      d.cloudflare ? planBox : null,
+      h('label', { class: 'row', style: { marginTop: '6px', fontWeight: 600 } }, auto, 'Keep DNS updated when my home IP changes', h('span', { class: 'muted', style: { fontWeight: 400 }, text: '(every domain Cloudflare manages · checks every 10 minutes)' })));
+    if (d.cloudflare) preview();
   }
   renderCf(st);
-  $('#page').replaceChildren(pageShell('Domain & DNS', `Mail for @${st.domain} needs these DNS records. Green means the internet already sees them correctly.`,
+
+  const d = dom();
+  const removeBtn = d.main ? null : h('button', { class: 'btn sm ghost danger', onclick: async () => {
+    if (!await confirmBox(`Stop taking mail for ${d.domain}?`, 'New mail to this domain will bounce. Mail you already have stays, and its DKIM key is kept in case you add it back. DNS records are not touched.', 'Remove domain', true)) return;
+    try { const r = await api('DELETE', 'api/domains/' + encodeURIComponent(d.domain)); domains = r.domains; S.me.domains = domains.map(x => x.domain); S.domSel = domains[0].domain; toast(`${d.domain} removed`); pageDomain(); } catch (e) { fail(e); }
+  } }, icon('trash'), 'Remove');
+  $('#page').replaceChildren(pageShell('Domain & DNS', domains.length > 1 ? `${domains.length} domains deliver into your one inbox. Pick one to see its DNS records.` : `Mail for @${d.domain} needs these DNS records. Green means the internet already sees them correctly.`,
+    h('div', { class: 'card dom-card' }, h('h2', {}, icon('globe'), 'Your domains', h('span', { class: 'grow' }), removeBtn), strip),
     cf,
-    h('div', { class: 'card' }, h('h2', {}, 'Records ', summary, h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: check }, icon('refresh'), 'Check again')),
+    h('div', { class: 'card' }, h('h2', {}, 'Records for ', h('span', { class: 'mono-dom', text: d.domain }), ' ', summary, h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: check }, icon('refresh'), 'Check again')),
       h('p', { class: 'sub', text: 'Not using Cloudflare? Add these at your DNS provider by hand (use the copy buttons). Changes can take a few minutes to show up.' }),
       h('div', { style: { overflowX: 'auto' } }, h('table', { class: 'recs' }, h('thead', {}, h('tr', {}, h('th', { text: 'Type' }), h('th', { text: 'Name' }), h('th', { text: 'Value' }), h('th', { text: 'Status' }))), table)))));
 }
+const CF_PATHS = '<path fill="#fff" d="M43.6 22.4l.5-1.7c.6-2 .4-3.8-.6-5.1-.9-1.2-2.3-1.9-4.1-2l-17.4-.2c-.1 0-.2-.1-.3-.1-.1-.1-.1-.2 0-.3.1-.2.2-.3.4-.3l17.6-.2c2.1-.1 4.3-1.8 5.1-3.8l1-2.6c0-.1.1-.2 0-.3C44.6 2.5 40.4 0 35.6 0c-5.5 0-10.2 3.6-11.9 8.5-1.1-.8-2.5-1.3-4-1.1-2.6.3-4.7 2.4-5 5-.1.7 0 1.3.1 2C10.5 14.5 7 18.1 7 22.5c0 .4 0 .8.1 1.2 0 .2.2.3.3.3h35.5c.2 0 .4-.1.4-.3z"/><path fill="#fff" opacity=".75" d="M50.1 10.2h-.5c-.1 0-.2.1-.3.2l-.8 2.6c-.6 2-.4 3.8.6 5.1.9 1.2 2.3 1.9 4.1 2l3.7.2c.1 0 .2.1.3.1.1.1.1.2 0 .3-.1.2-.2.3-.4.3l-3.8.2c-2.1.1-4.3 1.8-5.1 3.8l-.3.7c-.1.1 0 .3.2.3h13c.2 0 .3-.1.3-.2.2-.8.3-1.7.3-2.6 0-5.1-4.2-9.3-9.3-9.3"/>';
+const CF_SVG = '<svg viewBox="0 0 64 32">' + CF_PATHS.replaceAll('#fff', '#f6821f') + '</svg>';
 
 // ---- Status ----
 async function pageStatus() {
-  const s = await api('GET', '/api/status');
+  const s = await api('GET', 'api/status');
   const tile = (state, title, detail, extra) => h('div', { class: 'tile' }, h('div', { class: 'h' }, h('span', { class: 'dot ' + state }), title), h('div', { class: 'd' }, detail), extra || null);
   const svc = (name, v, key) => tile(v === 'active' ? 'ok' : v === 'n/a' ? '' : 'bad', name, v === 'active' ? 'Running' : v === 'n/a' ? 'Not used' : `Not running (${v})`,
-    v !== 'n/a' ? h('div', {}, h('button', { class: 'btn sm', onclick: async e => { e.target.disabled = true; try { await api('POST', '/api/services/restart', { name: key }); toast(`${name} restarted`); setTimeout(() => showPage('status'), 1200); } catch (x) { fail(x); e.target.disabled = false; } } }, 'Restart')) : null);
+    v !== 'n/a' ? h('div', {}, h('button', { class: 'btn sm', onclick: async e => { e.target.disabled = true; try { await api('POST', 'api/services/restart', { name: key }); toast(`${name} restarted`); setTimeout(() => showPage('status'), 1200); } catch (x) { fail(x); e.target.disabled = false; } } }, 'Restart')) : null);
   const ipOk = s.ip.matches;
   const tiles = [
     svc('Postfix (sending)', s.services.postfix, 'postfix'),
@@ -958,7 +1045,7 @@ async function pageStatus() {
     s.disk ? tile(s.disk.free / s.disk.total > 0.1 ? 'ok' : 'warn', 'Disk space', `${fmtSize(s.disk.free)} free of ${fmtSize(s.disk.total)}`) : null,
   ];
   const bl = h('div', { class: 'kv' }, h('div', { class: 'tile' }, h('span', { class: 'spin' })));
-  api('GET', '/api/status/blocklists').then(r => {
+  api('GET', 'api/status/blocklists').then(r => {
     bl.replaceChildren(...r.results.map(x => tile({ clean: 'ok', listed: 'bad', info: 'warn', unknown: '' }[x.status], x.name,
       x.status === 'clean' ? 'Not listed' : x.status === 'unknown' ? `Couldn’t check (${x.detail})` : `${x.lists ? 'Listed on ' + x.lists.join(', ') + '. ' : 'Listed. '}${x.detail || ''}`,
       x.status === 'listed' || x.status === 'info' ? h('div', {}, h('a', { href: x.remove, target: '_blank', rel: 'noopener' }, 'How to get removed →'), x.note ? h('div', { class: 'd', text: x.note }) : null) : null)));
@@ -968,13 +1055,13 @@ async function pageStatus() {
   const renderQueue = q => qbody.replaceChildren(!q.items.length ? h('p', { class: 'muted', text: q.ok ? 'Empty — nothing is waiting to be delivered.' : q.error || 'The queue could not be read.' }) :
     h('table', { class: 'qtable' }, h('tr', {}, h('th', { text: 'Since' }), h('th', { text: 'To' }), h('th', { text: 'Why it’s waiting' }), h('th', {})),
       q.items.map(i => h('tr', {}, h('td', { text: fmtWhen(i.at) }), h('td', { text: i.to.map(t => t.address).join(', ') }), h('td', { class: 'muted', text: i.to.map(t => t.reason).filter(Boolean).join('; ') || i.queue }),
-        h('td', {}, h('button', { class: 'btn sm ghost danger', onclick: async () => { await api('POST', '/api/queue', { action: 'delete', id: i.id }).catch(fail); renderQueue(await api('GET', '/api/queue')); } }, 'Delete'))))));
+        h('td', {}, h('button', { class: 'btn sm ghost danger', onclick: async () => { await api('POST', 'api/queue', { action: 'delete', id: i.id }).catch(fail); renderQueue(await api('GET', 'api/queue')); } }, 'Delete'))))));
   renderQueue(s.queue);
   const logPre = h('pre', { class: 'log', text: 'Loading…' });
   const filt = h('input', { type: 'search', placeholder: 'Filter the log (e.g. an address)', style: { maxWidth: '320px' } });
   let logText = '';
   const showLog = () => { const f = filt.value.trim().toLowerCase(); logPre.textContent = f ? logText.split('\n').filter(l => l.toLowerCase().includes(f)).join('\n') : logText; logPre.scrollTop = logPre.scrollHeight; };
-  const loadLog = async () => { logText = await api('GET', '/api/log?n=400').catch(e => e.message); showLog(); };
+  const loadLog = async () => { logText = await api('GET', 'api/log?n=400').catch(e => e.message); showLog(); };
   filt.addEventListener('input', showLog); loadLog();
   const states = tiles.filter(Boolean).map(t => $('.dot', t)?.className || '');
   const bad = states.filter(c => /\bbad\b/.test(c)).length, warn = states.filter(c => /\bwarn\b/.test(c)).length;
@@ -985,14 +1072,14 @@ async function pageStatus() {
   $('#page').replaceChildren(pageShell('Server status', 'Everything that has to work for mail to flow, checked live.', hero,
     h('div', { class: 'card' }, h('h2', {}, 'Health', h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: () => showPage('status') }, icon('refresh'), 'Check again')), h('div', { class: 'kv', style: { marginTop: '12px' } }, tiles.filter(Boolean))),
     h('div', { class: 'card' }, h('h2', {}, icon('shield'), 'Blocklists'), h('p', { class: 'sub', text: 'Mail providers refuse or junk mail from addresses on these lists. Spamhaus is asked through its own servers, because it refuses public DNS.' }), bl),
-    h('div', { class: 'card' }, h('h2', {}, 'Outgoing queue', h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: async () => { await api('POST', '/api/queue', { action: 'flush' }).then(() => toast('Retrying now')).catch(fail); setTimeout(async () => renderQueue(await api('GET', '/api/queue')), 1500); } }, 'Retry all now')), h('p', { class: 'sub', text: 'Messages the server is still trying to deliver.' }), qbody),
+    h('div', { class: 'card' }, h('h2', {}, 'Outgoing queue', h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: async () => { await api('POST', 'api/queue', { action: 'flush' }).then(() => toast('Retrying now')).catch(fail); setTimeout(async () => renderQueue(await api('GET', 'api/queue')), 1500); } }, 'Retry all now')), h('p', { class: 'sub', text: 'Messages the server is still trying to deliver.' }), qbody),
     h('div', { class: 'card' }, h('h2', {}, 'Mail log', h('span', { class: 'grow' }), filt, h('button', { class: 'btn sm', onclick: loadLog }, icon('refresh'))), logPre)));
 }
 
 // ---- Settings ----
 async function pageSettings() {
-  const s = await api('GET', '/api/settings');
-  const save = async (patch, msg = 'Saved') => { try { Object.assign(s, await api('POST', '/api/settings', patch)); toast(msg); S.me.fromName = s.fromName; S.me.signature = s.signature; } catch (e) { fail(e); } };
+  const s = await api('GET', 'api/settings');
+  const save = async (patch, msg = 'Saved') => { try { Object.assign(s, await api('POST', 'api/settings', patch)); toast(msg); S.me.fromName = s.fromName; S.me.signature = s.signature; } catch (e) { fail(e); } };
   const field = (label, input, hint) => h('label', { class: 'f' }, label, input, hint ? h('small', { text: hint }) : null);
   // profile
   const nameIn = h('input', { type: 'text', value: s.fromName, placeholder: 'Your name' });
@@ -1007,7 +1094,7 @@ async function pageSettings() {
   const spfIn = h('input', { type: 'text', value: s.outbound.spfInclude, placeholder: 'e.g. spf.brevo.com' });
   const probeOut = h('div', { class: 'chips' });
   const showProbes = list => probeOut.replaceChildren(...(list || []).map(p => h('span', { class: 'chip ' + (p.ok ? 'ok' : 'bad'), title: p.banner || p.error || '' }, `${p.port} ${p.ok ? `✓ ${p.ms} ms` : '✗ ' + (p.error || 'no')}`)));
-  const testBtn = h('button', { class: 'btn sm', onclick: async () => { testBtn.disabled = true; probeOut.replaceChildren(h('span', { class: 'spin' })); try { showProbes((await api('GET', '/api/outbound/probe?host=' + encodeURIComponent(hostIn.value.trim()))).results); } catch (e) { probeOut.replaceChildren(); fail(e); } testBtn.disabled = false; } }, 'Test ports');
+  const testBtn = h('button', { class: 'btn sm', onclick: async () => { testBtn.disabled = true; probeOut.replaceChildren(h('span', { class: 'spin' })); try { showProbes((await api('GET', 'api/outbound/probe?host=' + encodeURIComponent(hostIn.value.trim()))).results); } catch (e) { probeOut.replaceChildren(); fail(e); } testBtn.disabled = false; } }, 'Test ports');
   const MODES = [['direct', 'Directly', 'Your server delivers every message itself, on port 25 (the only port mail servers accept mail from each other on).'],
     ['auto', 'Directly, relay as backup', 'Your server still sends itself. A relay only steps in for a message that can’t be delivered directly — or for everything while your provider blocks port 25.'],
     ['relay', 'Always through a relay', 'Every message is handed to a relay service on port 587, 465 or 2525, and it delivers for you.']];
@@ -1032,7 +1119,7 @@ async function pageSettings() {
   // security
   const curP = h('input', { type: 'password', autocomplete: 'current-password' }), newP = h('input', { type: 'password', autocomplete: 'new-password' });
   const sess = h('div', { class: 'muted' }, 'Loading…');
-  api('GET', '/api/account/sessions').then(list => sess.replaceChildren(h('div', { style: { marginBottom: '8px' } }, `${list.length} signed-in ${list.length === 1 ? 'device' : 'devices'}:`),
+  api('GET', 'api/account/sessions').then(list => sess.replaceChildren(h('div', { style: { marginBottom: '8px' } }, `${list.length} signed-in ${list.length === 1 ? 'device' : 'devices'}:`),
     ...list.map(x => h('div', { style: { fontSize: '12.5px', padding: '4px 0' } }, x.current ? h('b', { text: 'This device — ' }) : null, `${x.ua.replace(/\(.*?\)/g, '').slice(0, 70) || 'unknown'} · ${x.ip} · last seen ${fmtWhen(x.seen)}`)))).catch(() => {});
   const notifOn = localStorage.getItem('sm-notify') === '1' && 'Notification' in window && Notification.permission === 'granted';
 
@@ -1042,22 +1129,22 @@ async function pageSettings() {
     h('div', { class: 'card' }, h('h2', { text: 'Sending' }), h('p', { class: 'sub', text: nowLine }),
       h('div', { class: 'form' }, segOut, modeHelp, relayBox, h('div', {}, h('button', { class: 'btn pri', onclick: async e => {
         e.target.disabled = true;
-        try { const r = await api('POST', '/api/settings/outbound', { mode: outMode, host: hostIn.value, port: portIn.value, user: userIn.value, pass: passIn.value, spfInclude: spfIn.value }); passIn.value = ''; const x = r.outbound; toast(x.mode === 'direct' ? 'Your server now sends every message itself' : x.active === 'relay' ? `Sending through ${x.host} on port ${x.using}` : `Sending directly; ${x.host}:${x.using} is the backup`); showPage('settings'); }
+        try { const r = await api('POST', 'api/settings/outbound', { mode: outMode, host: hostIn.value, port: portIn.value, user: userIn.value, pass: passIn.value, spfInclude: spfIn.value }); passIn.value = ''; const x = r.outbound; toast(x.mode === 'direct' ? 'Your server now sends every message itself' : x.active === 'relay' ? `Sending through ${x.host} on port ${x.using}` : `Sending directly; ${x.host}:${x.using} is the backup`); showPage('settings'); }
         catch (x) { if (x.data?.probes) showProbes(x.data.probes); fail(x); } e.target.disabled = false;
       } }, 'Save sending method')), notes.length ? h('div', {}, h('b', { style: { fontSize: '13px' }, text: 'Recent automatic changes' }), notes) : null)),
     h('div', { class: 'card' }, h('h2', { text: 'Receiving' }), h('p', { class: 'sub', text: s.mode === 'relay' ? 'Forward Email receives your mail on port 25 and posts each message to this server’s public URL.' : 'This server receives mail itself on port 25.' }),
       h('div', { class: 'form' }, s.mode === 'relay' ? [field('Public URL of this server', hookIn, 'The address the relay posts to (usually a Cloudflare Tunnel). Only the mail drop-off path is served there.'),
         h('div', { class: 'f' }, 'Drop-off address (goes in the forward-email TXT record)', h('div', { class: 'row' }, ep, h('button', { class: 'copy', onclick: () => copyText(ep.textContent) }, icon('copy')))),
         h('div', { class: 'row' }, h('button', { class: 'btn pri', onclick: () => save({ webhookUrl: hookIn.value }) }, 'Save'),
-          h('button', { class: 'btn', onclick: async () => { if (!await confirmBox('Make a new secret drop-off address?', s.cloudflare.connected ? 'The old address stops working immediately. The DNS record is updated for you through Cloudflare.' : 'The old address stops working immediately — update the forward-email TXT record right after.', 'Make new address')) return; try { const r = await api('POST', '/api/settings/rotate-secret'); Object.assign(s, r); ep.textContent = r.webhookEndpoint; toast(r.dns?.ok ? 'New address saved and DNS updated' : 'New address saved — update the TXT record'); } catch (e) { fail(e); } } }, 'New secret address'))] : null)),
+          h('button', { class: 'btn', onclick: async () => { if (!await confirmBox('Make a new secret drop-off address?', s.cloudflare.connected ? 'The old address stops working immediately. The DNS record is updated for you through Cloudflare.' : 'The old address stops working immediately — update the forward-email TXT record right after.', 'Make new address')) return; try { const r = await api('POST', 'api/settings/rotate-secret'); Object.assign(s, r); ep.textContent = r.webhookEndpoint; toast(r.dns?.ok ? 'New address saved and DNS updated' : 'New address saved — update the TXT record'); } catch (e) { fail(e); } } }, 'New secret address'))] : null)),
     h('div', { class: 'card' }, h('h2', { text: 'Server details' }), h('div', { class: 'form' }, h('div', { class: 'grid2' }, field('Server name (HELO)', mxIn, 'Must have an A record pointing at the public IP.'), field('Public IP', ipIn, 'Used for the A and SPF records.')),
       h('div', { class: 'grid2' }, field('DMARC policy', dPol), field('DMARC report address', dRua, 'Optional.')),
       h('div', {}, h('button', { class: 'btn pri', onclick: () => save({ mxhost: mxIn.value, publicIp: ipIn.value, dmarcPolicy: dPol.value, dmarcRua: dRua.value }) }, 'Save')))),
     h('div', { class: 'card' }, h('h2', { text: 'Security' }), h('div', { class: 'form' }, h('div', { class: 'grid2' }, field('Current password', curP), field('New password', newP, 'At least 10 characters.')),
-      h('div', {}, h('button', { class: 'btn pri', onclick: async () => { try { await api('POST', '/api/account/password', { current: curP.value, next: newP.value }); curP.value = newP.value = ''; toast('Password changed — other devices were signed out'); } catch (e) { fail(e); } } }, 'Change password')),
-      sess, h('div', {}, h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/account/signout-others').catch(fail); toast('Other devices signed out'); showPage('settings'); } }, 'Sign out other devices')))),
+      h('div', {}, h('button', { class: 'btn pri', onclick: async () => { try { await api('POST', 'api/account/password', { current: curP.value, next: newP.value }); curP.value = newP.value = ''; toast('Password changed — other devices were signed out'); } catch (e) { fail(e); } } }, 'Change password')),
+      sess, h('div', {}, h('button', { class: 'btn', onclick: async () => { await api('POST', 'api/account/signout-others').catch(fail); toast('Other devices signed out'); showPage('settings'); } }, 'Sign out other devices')))),
     h('div', { class: 'card' }, h('h2', {}, icon('shield'), 'Responsible use'), s.agreement ? h('p', { class: 'sub', text: `Signed by ${s.agreement.name} on ${fmtFull(s.agreement.at)}${s.agreement.isp ? ` (internet provider: ${s.agreement.isp})` : ''}.` }) : null,
-      h('div', {}, h('button', { class: 'btn', onclick: async () => { const a = await api('GET', '/api/agreement'); dialog('Responsible-use agreement', h('div', { class: 'agree-read' }, ispBadge(a.isp), termsList(a.terms)), [['Close', true, 'pri']]); } }, 'Read the agreement'))),
+      h('div', {}, h('button', { class: 'btn', onclick: async () => { const a = await api('GET', 'api/agreement'); dialog('Responsible-use agreement', h('div', { class: 'agree-read' }, ispBadge(a.isp), termsList(a.terms)), [['Close', true, 'pri']]); } }, 'Read the agreement'))),
     h('div', { class: 'card' }, h('h2', {}, icon('palette'), 'Appearance'), h('p', { class: 'sub', text: 'Saved in this browser.' }),
       h('div', { class: 'form' },
         h('div', { class: 'f' }, 'Theme', segPick([['auto', 'Match device'], ['light', 'Light'], ['dark', 'Dark']], theme(), v => { localStorage.setItem('sm-theme', v); applyTheme(); renderNav(); })),
@@ -1143,7 +1230,7 @@ function palette() {
     if (!ql) list = list.filter(x => x.sec !== 'Addresses');
     idx = 0; draw(list.slice(0, 40));
     if (q.length >= 2) {
-      const r = await api('GET', '/api/messages?' + new URLSearchParams({ folder: 'all', q, limit: 8 })).catch(() => ({ items: [] }));
+      const r = await api('GET', 'api/messages?' + new URLSearchParams({ folder: 'all', q, limit: 8 })).catch(() => ({ items: [] }));
       if (my !== seq) return;
       const msgs = r.items.map(m => ({ sec: 'Messages', msg: m, t: m.subject || '(no subject)', sub: `${nameOf(m.from)} · ${fmtWhen(m.date)}`, run: () => { close(); S.alias = ''; location.hash = `#/f/${m.folder}/${encodeURIComponent(m.id)}`; } }));
       draw([...msgs, ...list.slice(0, 30)]);
@@ -1195,7 +1282,7 @@ document.addEventListener('keydown', e => {
 let es = null;
 function live() {
   es?.close();
-  es = new EventSource('/api/events');
+  es = new EventSource('api/events');
   es.addEventListener('new', async () => {
     await loadFolders(); if (S.view === 'mail') await loadList();
     const newest = S.items.find(x => x.unread);
@@ -1211,7 +1298,7 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 
 // ============================================================== boot ====
 async function boot() {
-  try { S.me = await api('GET', '/api/state'); }
+  try { S.me = await api('GET', 'api/state'); }
   catch (e) { if (!S.me) showLogin(); return; }
   if (!S.me.agreement) return showAgreement();
   shell();
