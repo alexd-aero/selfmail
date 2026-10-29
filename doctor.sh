@@ -18,13 +18,19 @@ if command -v docker >/dev/null 2>&1 && ss -lntp 2>/dev/null | awk '$4 ~ /:25$/'
 fi
 if ! postfix status >/dev/null 2>&1 && ss -lntp 2>/dev/null | awk '$4 ~ /:25$/' | grep -q master; then warn "a dead Postfix still holds port 25 — clearing it"; fuser -k 25/tcp >/dev/null 2>&1; sleep 2; fi
 owner="$(ss -lntp 2>/dev/null | awk '$4 ~ /:25$/' | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
-[ -z "$owner" ] || [ "$owner" = master ] && ok "nothing else is on port 25" || bad "port 25 is held by $owner"
+case "$owner" in ""|master|smtpd) ok "nothing else is on port 25" ;; *) bad "port 25 is held by $owner" ;; esac   # smtpd is Postfix's own
 
 step "Postfix settings"
 if [ ! -f /proc/net/if_inet6 ] || [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = 1 ]; then
   [ "$(postconf -h inet_protocols)" = ipv4 ] || { warn "IPv6 is off but Postfix wanted it — switching Postfix to IPv4"; postconf -e "inet_protocols = ipv4"; }
 fi
 [ "$(postconf -h milter_connect_timeout)" = 5s ] || { postconf -e "milter_connect_timeout = 5s" "milter_command_timeout = 10s"; ok "capped the OpenDKIM wait (a stuck OpenDKIM no longer blocks sending)"; }
+# the server's own notices (root@, postmaster@ the MX host) stay here instead of going out to the
+# MX record and back to this machine's public address (no port 25 there: they sat in the queue)
+mh="$(postconf -h myhostname)"; flush=0
+case " $(postconf -h virtual_mailbox_domains | tr ',' ' ') " in *" $mh "*) ;; *)
+  case ", $(postconf -h mydestination | tr -s ' ,' ','), " in *",\$myhostname,"*|*",$mh,"*|*", \$myhostname,"*|*", $mh,"*) ;; *)
+    postconf -e "mydestination = \$myhostname, localhost"; flush=1; ok "mail for $mh itself (the server's own notices) is delivered here now" ;; esac ;; esac
 chk="$(postfix check 2>&1)"; [ -z "$chk" ] && ok "postfix check is clean" || { warn "postfix check says:"; echo "$chk" | sed 's/^/      /'; }
 for m in vmailbox virtual; do [ -f /etc/postfix/$m ] && postmap /etc/postfix/$m; done; newaliases 2>/dev/null || true
 
@@ -36,11 +42,15 @@ systemctl is-active --quiet opendkim && ok "running" || { bad "won't start:"; jo
 
 step "Postfix"
 systemctl reset-failed postfix >/dev/null 2>&1; systemctl restart postfix; sleep 3
-if banner="$(greets)"; then ok "answers: $banner"; else bad "doesn't greet on port 25"; timeout 3 postfix start-fg 2>&1 | head -12 | sed 's/^/      /'; journalctl -u 'postfix*' -n 15 --no-pager | sed 's/^/      /'; fi
+if banner="$(greets)"; then ok "answers: $banner"
+  if [ "$flush" = 1 ] || [ -n "$(postqueue -p 2>/dev/null | grep -E '^[0-9A-F]')" ]; then postqueue -f 2>/dev/null; ok "asked Postfix to retry what's queued"; fi
+else bad "doesn't greet on port 25"; timeout 3 postfix start-fg 2>&1 | head -12 | sed 's/^/      /'; journalctl -u 'postfix*' -n 15 --no-pager | sed 's/^/      /'; fi
 
 step "selfmail"
-systemctl restart selfmail; sleep 2
+systemctl restart selfmail
 p="$("$(cat /opt/selfmail/.node)" -e 'console.log(JSON.parse(require("fs").readFileSync("/etc/selfmail/config.json","utf8")).port||8088)' 2>/dev/null)"
+# it takes a few seconds to start on a small machine: give it 20 before calling it down
+for i in $(seq 1 20); do curl -fsS --max-time 2 "http://127.0.0.1:${p:-8088}/" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS --max-time 5 "http://127.0.0.1:${p:-8088}/" >/dev/null && ok "web mail answers on port ${p:-8088}" || { bad "web mail isn't answering"; journalctl -u selfmail -n 15 --no-pager | sed 's/^/      /'; }
 [ -f /etc/systemd/system/selfmail-tunnel.service ] && { systemctl restart selfmail-tunnel; ok "tunnel restarted"; }
 echo

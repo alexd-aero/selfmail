@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.4.1"
+SM_VERSION="2.4.2"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
@@ -239,9 +239,13 @@ configure_postfix() {
   printf '@%s\t%s@%s\n' "$DOMAIN" "$MAILBOX" "$DOMAIN" > /etc/postfix/virtual   # catch-all: every address @domain lands in one mailbox
   postmap /etc/postfix/vmailbox; postmap /etc/postfix/virtual
   local proto=all
+  # the server's own notices (root@, postmaster@ the MX host) are delivered here: with
+  # localhost alone they went out to the MX record, back to this machine's public address,
+  # and sat in the queue where a router forwards no port 25 to itself
+  local MYDEST='$myhostname, localhost'; [ "$MXHOST" = "$DOMAIN" ] && MYDEST=localhost
   if [ ! -f /proc/net/if_inet6 ] || [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = 1 ]; then proto=ipv4; fi
   postconf -e \
-    "myhostname = $MXHOST" "smtpd_banner = \$myhostname ESMTP" "mydestination = localhost" \
+    "myhostname = $MXHOST" "smtpd_banner = \$myhostname ESMTP" "mydestination = $MYDEST" \
     "mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128" "inet_interfaces = all" "inet_protocols = $proto" \
     "smtp_address_preference = ipv4" "disable_vrfy_command = yes" "smtpd_helo_required = yes" \
     "smtpd_relay_restrictions = permit_mynetworks defer_unauth_destination" \
