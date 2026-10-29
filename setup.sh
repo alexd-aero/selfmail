@@ -15,7 +15,7 @@
 set -euo pipefail
 umask 022
 
-SM_VERSION="2.4.2"
+SM_VERSION="2.4.3"
 APP_DIR=/opt/selfmail
 ETC=/etc/selfmail
 VAR=/var/lib/selfmail
@@ -522,7 +522,11 @@ if [ "$MODE_RUN" = update ]; then
   deploy_app; install_service; copy_dkim_public
   [ -f /etc/systemd/system/selfmail-health.timer ] && health_timer ""
   sign_agreement 0
-  [ -z "$HOST_KEY_FILE" ] && find_aegis && aegis_prepare
+  # already an addon of an Aegis (its gate's key is in the config): an update leaves that link as it is.
+  # Adding the addon again only waited on the gate (20 s) and warned "couldn't add the addon: timeout"
+  if "$NODE" -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hostKey?0:1)' "$ETC/config.json" 2>/dev/null; then
+    ok "still an addon of your Aegis (its link is kept)"
+  else [ -z "$HOST_KEY_FILE" ] && find_aegis && aegis_prepare; fi
   link_host
   ensure_login
   start_and_check

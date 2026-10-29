@@ -1,6 +1,6 @@
 {
   "name": "selfmail",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "private": true,
   "description": "Self-hosted mail server with a modern web mail client, for home servers that cannot open port 25",
   "main": "server.js",
