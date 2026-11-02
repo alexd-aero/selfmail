@@ -627,20 +627,26 @@ function tokenField(initial, placeholder) {
   const valid = a => /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i.test(a);
   const parse = str => String(str || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean).map(x => { const mm = /^(.*)<([^>]+)>\s*$/.exec(x); return mm ? { name: mm[1].trim().replace(/^"|"$/g, ''), address: mm[2].trim().toLowerCase() } : { name: '', address: x.toLowerCase() }; });
   function render() {
-    wrap.replaceChildren(...list.map((t, i) => h('span', { class: 'token' + (valid(t.address) ? '' : ' bad'), title: t.address }, avatar(t), h('span', { text: t.name || t.address }),
-      h('button', { type: 'button', title: 'Remove', onclick: () => { list.splice(i, 1); render(); onChange(); input.focus(); } }, icon('x')))), input);
+    // The input stays where it is: taking it out of the page would drop the cursor.
+    if (!input.parentNode) wrap.append(input);
+    wrap.querySelectorAll('.token').forEach(t => t.remove());
+    input.before(...list.map((t, i) => h('span', { class: 'token' + (valid(t.address) ? '' : ' bad'), title: t.address }, avatar(t), h('span', { text: t.name || t.address }),
+      h('button', { type: 'button', title: 'Remove', onclick: () => { list.splice(i, 1); render(); onChange(); input.focus(); } }, icon('x')))));
   }
   function add(str) { for (const t of parse(str)) if (!list.some(x => x.address === t.address)) list.push(t); render(); onChange(); }
   function commit() { if (input.value.trim()) { add(input.value); input.value = ''; } closeSug(); }
   function closeSug() { sug?.remove(); sug = null; }
   function pick(c) { if (!list.some(x => x.address === c.address)) list.push({ name: c.name, address: c.address }); input.value = ''; render(); onChange(); closeSug(); input.focus(); }
   function paintSug() {
-    if (!sug) { sug = h('div', { class: 'suggest' }); wrap.parentElement.append(sug); }
-    sug.replaceChildren(...sugItems.map((c, i) => h('button', { type: 'button', class: i === sugIdx ? 'on' : '', onmousedown: e => { e.preventDefault(); pick(c); }, onmouseenter: () => { sugIdx = i; paintSug(); } },
+    // Pressing anywhere in the list keeps the cursor in the input, so a click can't commit the half-typed text.
+    if (!sug) { sug = h('div', { class: 'suggest', onmousedown: e => e.preventDefault() }); wrap.parentElement.append(sug); }
+    sug.replaceChildren(...sugItems.map((c, i) => h('button', { type: 'button', class: i === sugIdx ? 'on' : '', onclick: () => pick(c), onmouseenter: () => { sugIdx = i; markSug(); } },
       avatar(c), h('div', {}, h('b', { text: c.name || c.address }), c.name ? h('small', { text: c.address }) : null))));
   }
+  // Only moves the highlight: rebuilding the buttons under the pointer loses the click.
+  function markSug() { [...sug.children].forEach((b, i) => b.classList.toggle('on', i === sugIdx)); }
   input.addEventListener('keydown', e => {
-    if (sug && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + sugItems.length) % sugItems.length; paintSug(); return; }
+    if (sug && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + sugItems.length) % sugItems.length; markSug(); return; }
     if ((e.key === 'Enter' || e.key === 'Tab') && sug && sugItems[sugIdx]) { e.preventDefault(); pick(sugItems[sugIdx]); return; }
     if ((e.key === 'Enter' || e.key === ',' || e.key === ';' || (e.key === 'Tab' && input.value.trim())) && input.value.trim()) { e.preventDefault(); commit(); return; }
     if (e.key === 'Backspace' && !input.value && list.length) { list.pop(); render(); onChange(); input.focus(); }
@@ -649,6 +655,7 @@ function tokenField(initial, placeholder) {
   input.addEventListener('input', async () => {
     const qq = input.value.trim().toLowerCase(); if (!qq) return closeSug();
     const all = await contacts();
+    if (input.value.trim().toLowerCase() !== qq) return;   // typed on (or committed) while the contacts loaded
     sugItems = all.filter(c => !list.some(x => x.address === c.address) && (c.address.includes(qq) || (c.name || '').toLowerCase().includes(qq))).slice(0, 6);
     sugIdx = 0; sugItems.length ? paintSug() : closeSug();
   });
@@ -659,6 +666,8 @@ function tokenField(initial, placeholder) {
   return {
     el: wrap,
     value: () => { if (input.value.trim()) commit(); return list.map(t => t.name ? `"${t.name.replace(/"/g, '')}" <${t.address}>` : t.address).join(', '); },
+    // For the draft autosave: what's there right now, leaving the half-typed text being typed.
+    peek: () => [...list.map(t => t.name ? `"${t.name.replace(/"/g, '')}" <${t.address}>` : t.address), input.value.trim()].filter(Boolean).join(', '),
     count: () => list.length + (input.value.trim() ? 1 : 0),
     invalid: () => list.filter(t => !valid(t.address)).map(t => t.address),
     onChange: fn => { onChange = fn; }, focus: () => input.focus(),
@@ -764,17 +773,18 @@ function compose(o = {}) {
     attBox.classList.toggle('hide', !atts.length);
     attBox.replaceChildren(...atts.map((a, i) => h('div', { class: 'catt' }, icon('clip'), h('span', { text: `${a.name} · ${fmtSize(a.size)}` }), h('button', { title: 'Remove', onclick: () => { atts.splice(i, 1); renderAtts(); dirty = true; } }, icon('x')))));
   }
-  const payload = () => ({ from: fromSel.value, to: to.value(), cc: cc.value(), bcc: bcc.value(), subject: subIn.value, html: ed.innerHTML, attachments: atts.map(({ name, type, data }) => ({ name, type, data })), inReplyTo: base.inReplyTo || '', references: base.references || '', answering: base.answering || '', draft: draftId });
+  const payload = (draft = false) => ({ from: fromSel.value, to: draft ? to.peek() : to.value(), cc: draft ? cc.peek() : cc.value(), bcc: draft ? bcc.peek() : bcc.value(), subject: subIn.value, html: ed.innerHTML, attachments: atts.map(({ name, type, data }) => ({ name, type, data })), inReplyTo: base.inReplyTo || '', references: base.references || '', answering: base.answering || '', draft: draftId });
   const hasContent = () => to.count() || subIn.value.trim() || ed.textContent.replace(/^\s*--\s*[\s\S]*$/, '').trim() || atts.length;
   async function saveDraft() {
     if (!dirty || sending || !hasContent()) return;
     dirty = false;
-    try { const r = await api('POST', 'api/drafts', payload()); draftId = r.id; status.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    try { const r = await api('POST', 'api/drafts', payload(true)); draftId = r.id; status.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch (e) { dirty = true; }
   }
   const timer = setInterval(saveDraft, 8000);
   async function doSend() {
     if (sending) return;
+    [to, cc, bcc].forEach(t => t.value());   // whatever is still being typed counts as a recipient
     const bad = [...to.invalid(), ...cc.invalid(), ...bcc.invalid()];
     if (bad.length) { toast(`“${bad[0]}” isn’t a valid address`, { bad: true }); return; }
     if (!to.count() && !cc.count() && !bcc.count()) { toast('Add at least one recipient.', { bad: true }); to.focus(); return; }

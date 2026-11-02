@@ -2,7 +2,7 @@
   "spec": 1,
   "id": "selfmail",
   "name": "selfmail",
-  "version": "2.4.3",
+  "version": "2.4.4",
   "description": "Your own mail server inside your dashboard: Postfix and OpenDKIM set up for you, a modern web mail for every domain you own, one-click Cloudflare DNS, and live health — queue, delivery, DNS, blocklists — with warnings on the bell. Bulwark can email you about attack waves through it.",
   "author": "Alexd Aero",
   "homepage": "https://github.com/alexd-aero/selfmail",
@@ -43,12 +43,11 @@
     "icon": "spark",
     "badge": "MAIL",
     "title": "{name} {version}",
-    "tagline": "Every domain you own in one inbox, inside your dashboard.",
+    "tagline": "Typing a recipient works properly now.",
     "highlights": [
-      "Add as many domains as you like; each signs its own mail",
-      "Cloudflare finds your other domains and asks before adding them",
-      "Live mail health on the Burrow page, warnings on the bell",
-      "Bulwark can email you when an attack wave starts"
+      "The cursor no longer jumps out of To while you type a long address",
+      "Half-typed addresses no longer turn into recipients by themselves",
+      "Clicking a suggestion adds that person, not what you had typed"
     ],
     "button": "Update to {version}"
   }
